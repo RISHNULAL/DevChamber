@@ -1,6 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { createClient } from '@supabase/supabase-js';
-import { store } from '../services/store.js';
+import { verifyToken, getUserById } from '../services/auth.js';
 
 declare global {
   namespace Express {
@@ -19,9 +18,25 @@ export async function requireUser(req: Request, res: Response, next: NextFunctio
   const authHeader = req.header('authorization') || '';
   const token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  // 1. Handle Local Demo Token: demo:<userId>:<role>:<name> or demo-<userId>
-  if (token.startsWith('demo-') || token.startsWith('demo:') || token === 'demo') {
-    let userId = 'teacher-alex';
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  // 1. Check JWT token
+  const decoded = verifyToken(token);
+  if (decoded) {
+    req.user = {
+      id: decoded.id,
+      email: decoded.email,
+      role: decoded.role,
+      name: decoded.name,
+    };
+    return next();
+  }
+
+  // 2. Fallback for demo tokens if any (e.g. demo:userId:role:name)
+  if (token.startsWith('demo:') || token.startsWith('demo-') || token === 'demo') {
+    let userId = 'teacher-alex-uuid-000000000001';
     let role: 'teacher' | 'student' | 'admin' = 'teacher';
     let name = 'Alex Morgan';
 
@@ -32,79 +47,32 @@ export async function requireUser(req: Request, res: Response, next: NextFunctio
       name = parts[3] ? decodeURIComponent(parts[3]) : name;
     } else if (token.startsWith('demo-')) {
       const parts = token.split('-');
-      if (parts[1] === 'student' || parts[1] === 'teacher') {
-        role = parts[1];
-        userId = `${parts[1]}-${parts[2] || 'user'}`;
-        name = parts[2] ? parts[2].charAt(0).toUpperCase() + parts[2].slice(1) : (role === 'teacher' ? 'Alex Morgan' : 'Jordan Lee');
+      if (parts[1] === 'student') {
+        role = 'student';
+        userId = 'student-jordan-uuid-000000000002';
+        name = 'Jordan Lee';
       }
     }
 
-    // Ensure user exists in memory store
-    if (!store.profiles.has(userId)) {
-      store.profiles.set(userId, {
+    // Try finding profile in database
+    const dbUser = await getUserById(userId).catch(() => null);
+    if (dbUser) {
+      req.user = {
+        id: dbUser.id,
+        email: dbUser.email,
+        role: dbUser.role,
+        name: dbUser.full_name,
+      };
+    } else {
+      req.user = {
         id: userId,
-        full_name: name,
-        role,
         email: `${userId}@school.edu`,
-      });
+        role,
+        name,
+      };
     }
-
-    const profile = store.profiles.get(userId)!;
-    req.user = {
-      id: profile.id,
-      email: profile.email,
-      role: profile.role,
-      name: profile.full_name || name,
-    };
     return next();
   }
 
-  // 2. Handle Real Supabase Token
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_ANON_KEY;
-
-  if (url && key && token) {
-    try {
-      const client = createClient(url, key);
-      const { data, error } = await client.auth.getUser(token);
-      if (!error && data.user) {
-        const metadata = data.user.user_metadata || {};
-        const role = (metadata.role as 'teacher' | 'student') || 'student';
-        const name = (metadata.full_name as string) || (data.user.email?.split('@')[0] ?? 'User');
-
-        req.user = {
-          id: data.user.id,
-          email: data.user.email,
-          role,
-          name,
-        };
-        return next();
-      }
-    } catch {
-      // Fall through to error
-    }
-  }
-
-  // If Supabase is not configured and no token was sent, allow demo fallback for development convenience
-  if (!url || !key) {
-    // Default to student or teacher based on query or header
-    const defaultRole = (req.header('x-demo-role') as 'teacher' | 'student') || 'teacher';
-    const defaultId = defaultRole === 'teacher' ? 'teacher-alex' : 'student-jordan';
-    const profile = store.profiles.get(defaultId) || {
-      id: defaultId,
-      full_name: defaultRole === 'teacher' ? 'Alex Morgan' : 'Jordan Lee',
-      role: defaultRole,
-      email: `${defaultId}@school.edu`,
-    };
-
-    req.user = {
-      id: profile.id,
-      email: profile.email,
-      role: profile.role,
-      name: profile.full_name,
-    };
-    return next();
-  }
-
-  return res.status(401).json({ error: 'Authentication required' });
+  return res.status(401).json({ error: 'Invalid or expired session token' });
 }

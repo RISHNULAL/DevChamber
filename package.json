@@ -2,7 +2,20 @@
   "name": "devchamber",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["client", "server"],
-  "scripts": {"dev": "concurrently -k \"npm:dev:client\" \"npm:dev:server\"", "dev:client": "npm --workspace client run dev", "dev:server": "npm --workspace server run dev", "build": "npm --workspace client run build && npm --workspace server run build"},
-  "devDependencies": {"concurrently": "^9.1.0", "typescript": "^5.7.2"}
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:client\" \"npm:dev:server\"",
+    "dev:client": "npm --workspace client run dev",
+    "dev:server": "npm --workspace server run dev",
+    "build": "npm --workspace client run build && npm --workspace server run build",
+    "db:init": "npm --workspace server run db:init",
+    "db:test": "npm --workspace server run db:test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2"
+  }
 }

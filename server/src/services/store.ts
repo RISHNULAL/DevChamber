@@ -1,4 +1,4 @@
-// In-memory data store for Local Demo Mode or fallback when Supabase is not connected
+// In-memory data store types & local mock utilities
 import { randomBytes } from 'node:crypto';
 
 export interface Profile {
@@ -206,8 +206,8 @@ class DemoStore {
     return -1
 
 values = [2, 5, 8, 12, 16, 23, 38]
-print(f"Index of 16: {binary_search(values, 16)}")
-print(f"Index of 99: {binary_search(values, 99)}")`;
+print(f"Searching for 16: {binary_search(values, 16)}")
+print(f"Searching for 99: {binary_search(values, 99)}")`;
 
     const notesMd = `# Binary Search Notes
 A divide-and-conquer search for sorted sequences.

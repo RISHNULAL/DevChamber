@@ -2,68 +2,129 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   Activity,
-  ArrowLeft,
   ArrowRight,
   Bell,
   BookOpen,
+  Calendar,
   Check,
   ChevronDown,
   ChevronRight,
   CircleHelp,
   Clock3,
   Code2,
-  Command,
+  Download,
   FileCode2,
   FilePlus2,
   Folder,
   GraduationCap,
   LayoutDashboard,
-  Link2,
+  Lock,
   LogOut,
   Maximize2,
   Menu,
-  MessageCircle,
+  MessageSquare,
+  Mic,
+  MicOff,
   Minimize2,
-  PanelRightClose,
+  Monitor,
+  MonitorOff,
+  PhoneOff,
   Play,
   Plus,
+  Radio,
   Search,
   Send,
-  ShieldCheck,
+  Settings,
+  Share2,
   Sparkles,
-  Square,
+  Trash2,
+  User as UserIcon,
+  UserPlus,
   Users,
   Video,
+  VideoOff,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 
 import {
-  supabase,
+  MyProfileModal,
+  AccountSettingsModal,
+  NotificationsModal,
+} from './components/profile/ProfileModals.js';
+
+import { ChatPanel } from './components/chat/ChatPanel.js';
+
+import {
+  apiLogin,
+  apiSignup,
+  apiGetMe,
+  apiLogout,
+  getStoredToken,
   fetchClassrooms,
   createClassroom as apiCreateClassroom,
   joinClassroomByCode as apiJoinClassroom,
+  fetchClassroomStudents,
+  fetchPersonalWorkspace,
+  fetchSharedWorkspaces,
+  searchClassmateUsers,
   fetchMyWorkspace,
   fetchClassroomWorkspaces,
+  fetchWorkspaceById,
   saveWorkspaceFile,
-  updateWorkspacePermission,
+  deleteWorkspaceFile,
+  grantWorkspacePermission,
+  revokeWorkspacePermission,
   takeWorkspaceControl,
   runPythonCode,
+  fetchClassroomSessions,
+  createClassSession,
+  updateSessionStatus,
+  deleteClassSession,
+  fetchResources,
+  createResource as apiCreateResource,
+  updateResourceStatus,
+  deleteResource as apiDeleteResource,
+  fetchAssignments,
+  createAssignment as apiCreateAssignment,
+  updateAssignmentStatus,
+  openAssignmentWorkspace,
+  submitAssignment as apiSubmitAssignment,
+  fetchAssignmentSubmissions,
+  gradeAssignmentSubmission,
   fetchAssessments,
   createAssessment as apiCreateAssessment,
   updateAssessmentStatus,
+  addAssessmentQuestion,
+  deleteAssessmentQuestion,
   submitAssessment as apiSubmitAssessment,
   fetchAssessmentSubmissions,
-  fetchResources,
-  createResource as apiCreateResource,
-  fetchAssignments,
-  createAssignment as apiCreateAssignment,
   askAiAssistant,
 } from './services/api';
 
 import { getSocket, disconnectSocket } from './services/socket';
-import { screenShareManager } from './services/webrtc';
+import { videoClassroomManager, ParticipantMediaState } from './services/webrtc';
+import { DevChamberLogo } from './components/DevChamberLogo';
+import { createYjsSession, YjsSession, getUserColor } from './services/yjsCollab';
 
-type Page = 'Home' | 'Classroom' | 'Workspaces' | 'Workspace' | 'Resources' | 'Assignments' | 'Assessments' | 'Analytics';
+// Learning Components & Modals
+import { SessionsView } from './components/learning/SessionsView';
+import { ResourcesView } from './components/learning/ResourcesView';
+import { AssignmentsView } from './components/learning/AssignmentsView';
+import { AssessmentsView } from './components/learning/AssessmentsView';
+import { AnalyticsView } from './components/learning/AnalyticsView';
+import {
+  CreateSessionModal,
+  CreateResourceModal,
+  CreateAssignmentModal,
+  CreateAssessmentModal,
+  QuestionBuilderModal,
+  QuizRunnerModal,
+  AssignmentReviewDrawer,
+} from './components/learning/LearningModals';
+
+type Page = 'Home' | 'Classroom' | 'Sessions' | 'Students' | 'Workspaces' | 'Workspace' | 'Resources' | 'Assignments' | 'Assessments' | 'Analytics';
 type Role = 'Teacher' | 'Student';
 
 interface WorkspaceFile {
@@ -71,6 +132,14 @@ interface WorkspaceFile {
   name: string;
   language: string;
   content: string;
+  updated_at?: string;
+}
+
+interface SharedUser {
+  userId: string;
+  name: string;
+  email: string;
+  permission: 'owner' | 'editor' | 'viewer';
 }
 
 interface ClassroomItem {
@@ -94,32 +163,6 @@ interface ChatMsg {
   created_at: string;
 }
 
-interface AssessmentItem {
-  id: string;
-  title: string;
-  description: string;
-  duration_minutes: number;
-  status: 'draft' | 'published' | 'active' | 'ended';
-  questions?: Array<{
-    id: string;
-    prompt: string;
-    options: string[];
-    answer_key?: any;
-    points: number;
-  }>;
-}
-
-interface SubmissionItem {
-  id: string;
-  assessment_id: string;
-  student_id: string;
-  student_name: string;
-  answers: Record<string, any>;
-  score: number;
-  total_points: number;
-  submitted_at: string;
-}
-
 const starterCode = `def binary_search(values, target):
     low = 0
     high = len(values) - 1
@@ -138,39 +181,36 @@ const starterCode = `def binary_search(values, target):
     return -1
 
 values = [2, 5, 8, 12, 16, 23, 38]
-print(f"Index of 16: {binary_search(values, 16)}")
-print(f"Index of 42: {binary_search(values, 42)}")`;
+print(f"Searching for 16: {binary_search(values, 16)}")
+print(f"Searching for 42: {binary_search(values, 42)}")`;
 
 const seedFiles: WorkspaceFile[] = [
   { name: 'main.py', language: 'python', content: starterCode },
   { name: 'notes.md', language: 'markdown', content: '# Binary Search Notes\n\n- Time Complexity: O(log n)\n- Auxiliary Space: O(1)\n- Invariant: elements must be sorted.' },
 ];
 
-const NAV: { name: Page; icon: typeof LayoutDashboard }[] = [
-  { name: 'Home', icon: LayoutDashboard },
-  { name: 'Classroom', icon: Video },
-  { name: 'Workspaces', icon: Folder },
-  { name: 'Workspace', icon: Code2 },
-  { name: 'Resources', icon: BookOpen },
-  { name: 'Assignments', icon: FileCode2 },
-  { name: 'Assessments', icon: GraduationCap },
-  { name: 'Analytics', icon: Activity },
-];
-
 export default function App() {
   const [page, setPage] = useState<Page>('Home');
   const [role, setRole] = useState<Role>(() => (localStorage.getItem('dc-role') as Role) || 'Teacher');
   const [name, setName] = useState(() => localStorage.getItem('dc-name') || 'Alex Morgan');
-  const [userId, setUserId] = useState(() => localStorage.getItem('dc-user-id') || 'teacher-alex');
-  const [signedIn, setSignedIn] = useState(() => Boolean(localStorage.getItem('dc-session')));
+  const [userId, setUserId] = useState(() => localStorage.getItem('dc-user-id') || 'teacher-alex-uuid-000000000001');
+  const [email, setEmail] = useState(() => localStorage.getItem('dc-email') || 'alex.morgan@devchamber.edu');
+  const [signedIn, setSignedIn] = useState(() => Boolean(localStorage.getItem('dc-session') && getStoredToken()));
+  const [authChecking, setAuthChecking] = useState(() => Boolean(getStoredToken()));
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [modal, setModal] = useState('');
   const [toast, setToast] = useState('');
 
+  // Dropdown States & Refs
+  const [profileDropdownOpen, setProfileDropdownOpen] = useState(false);
+  const [classroomDropdownOpen, setClassroomDropdownOpen] = useState(false);
+  const profileMenuRef = useRef<HTMLDivElement>(null);
+  const classroomMenuRef = useRef<HTMLDivElement>(null);
+
   // Classroom state
   const [classrooms, setClassrooms] = useState<ClassroomItem[]>([]);
   const [activeClassroom, setActiveClassroom] = useState<ClassroomItem>({
-    id: 'ds-s5-cse',
+    id: 'class-ds-s5-cse-000000000001',
     name: 'Data Structures',
     subject: 'Computer Science',
     description: 'Algorithms, data structures, and problem solving.',
@@ -180,84 +220,118 @@ export default function App() {
   });
 
   const [live, setLive] = useState(false);
-  const [screenSharing, setScreenSharing] = useState(false);
-  const [remoteScreenFrame, setRemoteScreenFrame] = useState<string | null>(null);
-  const [pipOpen, setPipOpen] = useState(false);
 
   // Roster & Chat
   const [participants, setParticipants] = useState<Array<{ socketId: string; userId: string; name: string; role: string }>>([
-    { socketId: 's1', userId: 'teacher-alex', name: 'Alex Morgan', role: 'teacher' },
-    { socketId: 's2', userId: 'student-jordan', name: 'Jordan Lee', role: 'student' },
-    { socketId: 's3', userId: 'student-maya', name: 'Maya Chen', role: 'student' },
+    { socketId: 's1', userId: 'teacher-alex-uuid-000000000001', name: 'Alex Morgan', role: 'teacher' },
+    { socketId: 's2', userId: 'student-jordan-uuid-000000000002', name: 'Jordan Lee', role: 'student' },
+    { socketId: 's3', userId: 'student-maya-uuid-000000000003', name: 'Maya Chen', role: 'student' },
   ]);
+  const [classroomStudents, setClassroomStudents] = useState<Array<{ userId: string; name: string; email: string }>>([]);
   const [chat, setChat] = useState<ChatMsg[]>([]);
   const [chatDraft, setChatDraft] = useState('');
 
   // Workspace & Collaboration
-  const [currentWorkspaceId, setCurrentWorkspaceId] = useState('ws-jordan');
-  const [workspaceTitle, setWorkspaceTitle] = useState("Jordan's Workspace");
-  const [workspaceOwnerId, setWorkspaceOwnerId] = useState('student-jordan');
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState('ws-personal');
+  const [workspaceTitle, setWorkspaceTitle] = useState("My Workspace");
+  const [workspaceType, setWorkspaceType] = useState<'personal' | 'shared' | 'classroom'>('personal');
+  const [workspaceOwnerId, setWorkspaceOwnerId] = useState('student-jordan-uuid-000000000002');
+  const [workspaceOwnerName, setWorkspaceOwnerName] = useState('Jordan Lee');
+  const [workspaceMyPermission, setWorkspaceMyPermission] = useState<'owner' | 'editor' | 'viewer'>('owner');
+  const [workspaceSharedWith, setWorkspaceSharedWith] = useState<SharedUser[]>([]);
+  const [_workspacePermissions, setWorkspacePermissions] = useState<Record<string, 'owner' | 'editor' | 'viewer'>>({});
   const [files, setFiles] = useState<WorkspaceFile[]>(seedFiles);
   const [activeFileName, setActiveFileName] = useState('main.py');
   const [code, setCode] = useState(starterCode);
   const [output, setOutput] = useState('Your program output will appear here.');
   const [running, setRunning] = useState(false);
-  const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, 'owner' | 'editor' | 'viewer'>>({
-    'student-jordan': 'owner',
-    'teacher-alex': 'editor',
-  });
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'error' | 'unsaved'>('saved');
+  const autoSaveTimerRef = useRef<any>(null);
+  const [remoteCursors, setRemoteCursors] = useState<Record<string, { userId: string; userName: string; line: number; col: number; color: string }>>({});
   const [activeController, setActiveController] = useState<string | null>(null);
   const [allWorkspaces, setAllWorkspaces] = useState<any[]>([]);
+  const [sharedWorkspaces, setSharedWorkspaces] = useState<any[]>([]);
   const [collaborators, setCollaborators] = useState<any[]>([]);
 
-  // Assessments
-  const [assessmentsList, setAssessmentsList] = useState<AssessmentItem[]>([]);
-  const [activeExam, setActiveExam] = useState<AssessmentItem | null>(null);
-  const [examSubmissions, setExamSubmissions] = useState<SubmissionItem[]>([]);
-  const [examAnswers, setExamAnswers] = useState<Record<string, any>>({});
-  const [examCurrentIndex, setExamCurrentIndex] = useState(0);
-  const [examResult, setExamResult] = useState<SubmissionItem | null>(null);
+  // Workspace Access Modal state
+  const [accessModalWs, setAccessModalWs] = useState<any | null>(null);
 
-  // Resources & Assignments
+  // Learning System States
+  const [sessionsList, setSessionsList] = useState<any[]>([]);
   const [resourcesList, setResourcesList] = useState<any[]>([]);
   const [assignmentsList, setAssignmentsList] = useState<any[]>([]);
+  const [assessmentsList, setAssessmentsList] = useState<any[]>([]);
+
+  // Modal & Selection States for Learning System
+  const [selectedAssignmentForReview, setSelectedAssignmentForReview] = useState<any | null>(null);
+  const [assignmentSubmissions, setAssignmentSubmissions] = useState<any[]>([]);
+  const [selectedAssessmentForBuilder, setSelectedAssessmentForBuilder] = useState<any | null>(null);
+  const [selectedAssessmentForQuiz, setSelectedAssessmentForQuiz] = useState<any | null>(null);
+  const [selectedAssessmentForResults, setSelectedAssessmentForResults] = useState<any | null>(null);
+  const [assessmentSubmissionsList, setAssessmentSubmissionsList] = useState<any[]>([]);
 
   // AI Assistant
   const [aiOpen, setAiOpen] = useState(false);
   const [aiQuestion, setAiQuestion] = useState('');
-  const [aiAnswer, setAiAnswer] = useState('');
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiMessages, setAiMessages] = useState<Array<{ id: string; role: 'user' | 'assistant' | 'error'; text: string; question?: string }>>([]);
 
   const [mobileNav, setMobileNav] = useState(false);
   const [query, setQuery] = useState('');
-  const teacherVideoRef = useRef<HTMLVideoElement | null>(null);
-  const pipVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Check Supabase session on mount
+  // Check JWT session on mount
   useEffect(() => {
-    if (supabase) {
-      supabase.auth.getSession().then(({ data }) => {
-        if (data.session?.user) {
-          setSignedIn(true);
-          const meta = data.session.user.user_metadata || {};
-          if (meta.full_name) setName(meta.full_name);
-          if (meta.role) setRole(meta.role === 'teacher' ? 'Teacher' : 'Student');
-          setUserId(data.session.user.id);
-        }
-      });
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-        if (session?.user) {
-          setSignedIn(true);
-          const meta = session.user.user_metadata || {};
-          if (meta.full_name) setName(meta.full_name);
-          if (meta.role) setRole(meta.role === 'teacher' ? 'Teacher' : 'Student');
-          setUserId(session.user.id);
-        } else {
+    let mounted = true;
+
+    async function initSession() {
+      const token = getStoredToken();
+      if (!token) {
+        if (mounted) {
           setSignedIn(false);
+          setAuthChecking(false);
         }
-      });
-      return () => subscription.unsubscribe();
+        return;
+      }
+
+      try {
+        const res = await apiGetMe();
+        if (res?.user && mounted) {
+          const user = res.user;
+          const userRole = user.role || 'student';
+          const userName = user.full_name || (userRole === 'teacher' ? 'Alex Morgan' : 'Jordan Lee');
+          const finalRole: Role = userRole === 'teacher' || userRole === 'admin' ? 'Teacher' : 'Student';
+          const userEmail = user.email || (finalRole === 'Teacher' ? 'alex.morgan@devchamber.edu' : 'jordan.lee@devchamber.edu');
+
+          setUserId(user.id);
+          setName(userName);
+          setRole(finalRole);
+          setEmail(userEmail);
+          setSignedIn(true);
+          localStorage.setItem('dc-session', 'active');
+          localStorage.setItem('dc-email', userEmail);
+        } else if (mounted) {
+          setSignedIn(false);
+          localStorage.removeItem('dc-session');
+        }
+      } catch (err) {
+        console.warn('[DevChamber Auth] Session init error:', err);
+        if (mounted) {
+          setSignedIn(false);
+          localStorage.removeItem('dc-session');
+        }
+      } finally {
+        if (mounted) {
+          setAuthChecking(false);
+        }
+      }
     }
+
+    initSession();
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Save session state to localStorage
@@ -265,324 +339,534 @@ export default function App() {
     localStorage.setItem('dc-role', role);
     localStorage.setItem('dc-name', name);
     localStorage.setItem('dc-user-id', userId);
-  }, [role, name, userId]);
+    localStorage.setItem('dc-email', email);
+  }, [role, name, userId, email]);
 
-  // Toast timer
+  // Click outside listeners for profile & classroom dropdowns
   useEffect(() => {
-    if (toast) {
-      const timer = setTimeout(() => setToast(''), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [toast]);
-
-  // Load classrooms on sign in or classroom change
-  const loadClassrooms = async () => {
-    try {
-      const list = await fetchClassrooms();
-      if (list && list.length > 0) {
-        setClassrooms(list);
-        const match = list.find((c: any) => c.id === activeClassroom.id) || list[0];
-        setActiveClassroom(match);
+    function handleClickOutside(event: MouseEvent) {
+      if (profileMenuRef.current && !profileMenuRef.current.contains(event.target as Node)) {
+        setProfileDropdownOpen(false);
       }
-    } catch {
-      // Keep default active classroom
+      if (classroomMenuRef.current && !classroomMenuRef.current.contains(event.target as Node)) {
+        setClassroomDropdownOpen(false);
+      }
     }
-  };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
+  // Load classrooms on sign in
   useEffect(() => {
-    if (signedIn) {
-      loadClassrooms();
+    if (!signedIn) return;
+
+    let mounted = true;
+    async function loadData() {
+      try {
+        const list = await fetchClassrooms();
+        if (mounted && list.length > 0) {
+          setClassrooms(list);
+          setActiveClassroom(list[0]);
+        }
+      } catch (e) {
+        console.warn('Could not load classrooms:', e);
+      }
     }
-  }, [signedIn, role]);
+    loadData();
+    return () => {
+      mounted = false;
+    };
+  }, [signedIn]);
 
-  // Setup Socket.IO connection and room subscriptions
+  // Load classroom sessions, resources, assignments, assessments, students, and workspaces
   useEffect(() => {
-    if (!signedIn || !activeClassroom.id) return;
+    if (!signedIn || !activeClassroom?.id) return;
+    let mounted = true;
 
-    let cleanupListeners: (() => void) | undefined;
+    async function loadClassDetails() {
+      try {
+        const [wsList, sessList, asmList, resList, asgList, stdList] = await Promise.all([
+          fetchClassroomWorkspaces(activeClassroom.id).catch(() => []),
+          fetchClassroomSessions(activeClassroom.id).catch(() => []),
+          fetchAssessments(activeClassroom.id).catch(() => []),
+          fetchResources(activeClassroom.id).catch(() => []),
+          fetchAssignments(activeClassroom.id).catch(() => []),
+          fetchClassroomStudents(activeClassroom.id).catch(() => []),
+        ]);
 
-    getSocket().then((socket) => {
-      socket.emit('classroom:join', { classroomId: activeClassroom.id, name });
+        if (mounted) {
+          setAllWorkspaces(wsList);
+          setSessionsList(sessList);
+          setAssessmentsList(asmList);
+          setResourcesList(resList);
+          setAssignmentsList(asgList);
+          setClassroomStudents(stdList);
 
-      socket.on('classroom:roster', (roster: any[]) => {
-        setParticipants(roster);
-      });
-
-      socket.on('classroom:user-online', (user: any) => {
-        setParticipants((prev) => {
-          if (prev.some((p) => p.socketId === user.socketId || p.userId === user.userId)) return prev;
-          return [...prev, user];
-        });
-      });
-
-      socket.on('classroom:user-offline', ({ socketId, userId: offId }: any) => {
-        setParticipants((prev) => prev.filter((p) => p.socketId !== socketId && p.userId !== offId));
-      });
-
-      socket.on('classroom:session-state', ({ isLive }: { isLive: boolean }) => {
-        setLive(isLive);
-      });
-
-      socket.on('chat:history', (history: ChatMsg[]) => {
-        setChat(history);
-      });
-
-      socket.on('chat:message', (msg: ChatMsg) => {
-        setChat((prev) => [...prev, msg]);
-      });
-
-      socket.on('assessment:started', ({ assessment }: any) => {
-        setToast(`🔔 Assessment started: ${assessment.title}`);
-        loadAssessmentsData();
-      });
-
-      socket.on('assessment:submitted', ({ submission }: any) => {
-        setToast(`📝 ${submission.student_name} submitted quiz (${submission.score}/${submission.total_points} pts)`);
-        loadAssessmentsData();
-      });
-
-      // Listen for screen frames
-      screenShareManager.setupStudentScreenListener(
-        activeClassroom.id,
-        (stream) => {
-          if (pipVideoRef.current && stream) pipVideoRef.current.srcObject = stream;
-        },
-        (frame) => {
-          setRemoteScreenFrame(frame);
-          if (frame && !pipOpen && page === 'Workspace') {
-            setPipOpen(true);
+          // Select current workspace if needed
+          if (role === 'Student') {
+            const myWs = wsList.find((w: any) => w.owner_id === userId);
+            if (myWs) {
+              setCurrentWorkspaceId(myWs.id);
+              setWorkspaceTitle(myWs.title);
+              setWorkspaceOwnerId(myWs.owner_id);
+              setWorkspaceOwnerName(myWs.owner_name || name);
+              setWorkspaceMyPermission(myWs.myPermission || 'owner');
+              setWorkspaceSharedWith(myWs.sharedWith || []);
+              setWorkspacePermissions(myWs.permissions || {});
+              if (myWs.files && myWs.files.length > 0) {
+                setFiles(myWs.files);
+                setActiveFileName(myWs.files[0].name);
+                setCode(myWs.files[0].content);
+              }
+            }
+          } else if (wsList.length > 0) {
+            const firstWs = wsList[0];
+            setCurrentWorkspaceId(firstWs.id);
+            setWorkspaceTitle(firstWs.title);
+            setWorkspaceOwnerId(firstWs.owner_id);
+            setWorkspaceOwnerName(firstWs.owner_name || 'Student');
+            setWorkspaceMyPermission('editor');
+            setWorkspaceSharedWith(firstWs.sharedWith || []);
+            setWorkspacePermissions(firstWs.permissions || {});
+            if (firstWs.files && firstWs.files.length > 0) {
+              setFiles(firstWs.files);
+              setActiveFileName(firstWs.files[0].name);
+              setCode(firstWs.files[0].content);
+            }
           }
         }
-      ).then((cleanup) => {
-        cleanupListeners = cleanup;
+      } catch (err) {
+        console.warn('Failed to load classroom details:', err);
+      }
+    }
+
+    loadClassDetails();
+    return () => {
+      mounted = false;
+    };
+  }, [signedIn, activeClassroom.id, role, userId, name]);
+
+  // Socket.IO Setup
+  useEffect(() => {
+    if (!signedIn) return;
+
+    const socket = getSocket();
+
+    socket.emit('classroom:join', {
+      classroomId: activeClassroom.id,
+      name,
+    });
+
+    socket.emit('workspace:join', {
+      workspaceId: currentWorkspaceId,
+      classroomId: activeClassroom.id,
+    });
+
+    socket.on('classroom:roster', (roster: any[]) => {
+      setParticipants(roster);
+    });
+
+    socket.on('classroom:user-online', (user: any) => {
+      setParticipants((prev) => {
+        const filtered = prev.filter((p) => p.userId !== user.userId && p.socketId !== user.socketId);
+        return [...filtered, user];
       });
     });
 
-    return () => {
-      if (cleanupListeners) cleanupListeners();
-      getSocket().then((socket) => {
-        socket.emit('classroom:leave', { classroomId: activeClassroom.id });
-        socket.off('classroom:roster');
-        socket.off('classroom:user-online');
-        socket.off('classroom:user-offline');
-        socket.off('classroom:session-state');
-        socket.off('chat:history');
-        socket.off('chat:message');
-        socket.off('assessment:started');
-        socket.off('assessment:submitted');
-      });
-    };
-  }, [signedIn, activeClassroom.id, name, page]);
+    socket.on('classroom:user-offline', ({ userId: offId }: any) => {
+      setParticipants((prev) => prev.filter((p) => p.userId !== offId));
+    });
 
-  // Load classroom tabs data (workspaces, assessments, resources, assignments)
-  const loadWorkspaceData = async () => {
-    try {
-      if (role === 'Student') {
-        const ws = await fetchMyWorkspace(activeClassroom.id);
-        if (ws) {
-          setCurrentWorkspaceId(ws.id);
-          setWorkspaceTitle(ws.title);
-          setWorkspaceOwnerId(ws.owner_id);
-          if (ws.files && ws.files.length > 0) {
-            setFiles(ws.files);
-            const main = ws.files.find((f: any) => f.name === activeFileName) || ws.files[0];
-            setActiveFileName(main.name);
-            setCode(main.content);
-          }
-          if (ws.permissions) setWorkspacePermissions(ws.permissions);
-        }
-      } else {
-        // Teacher
-        const allWs = await fetchClassroomWorkspaces(activeClassroom.id);
-        setAllWorkspaces(allWs);
-        if (allWs && allWs.length > 0) {
-          const current = allWs.find((w: any) => w.id === currentWorkspaceId) || allWs[0];
-          setCurrentWorkspaceId(current.id);
-          setWorkspaceTitle(current.title);
-          setWorkspaceOwnerId(current.owner_id);
-          if (current.files && current.files.length > 0) {
-            setFiles(current.files);
-            const main = current.files.find((f: any) => f.name === activeFileName) || current.files[0];
-            setActiveFileName(main.name);
-            setCode(main.content);
-          }
-          if (current.permissions) setWorkspacePermissions(current.permissions);
-        }
-      }
-    } catch {
-      // Use seeded workspace
-    }
-  };
+    socket.on('classroom:session-state', ({ isLive }: { isLive: boolean }) => {
+      setLive(isLive);
+    });
 
-  const loadAssessmentsData = async () => {
-    try {
-      const list = await fetchAssessments(activeClassroom.id);
-      setAssessmentsList(list || []);
-      if (list && list.length > 0) {
-        const active = list.find((a: any) => a.status === 'active') || list[0];
-        const subs = await fetchAssessmentSubmissions(active.id);
-        setExamSubmissions(subs || []);
-      }
-    } catch {
-      // Use fallback
-    }
-  };
+    socket.on('chat:history', (messages: ChatMsg[]) => {
+      setChat(messages);
+    });
 
-  const loadResourcesData = async () => {
-    try {
-      const res = await fetchResources(activeClassroom.id);
-      setResourcesList(res || []);
-      const asg = await fetchAssignments(activeClassroom.id);
-      setAssignmentsList(asg || []);
-    } catch {
-      // fallback
-    }
-  };
+    socket.on('chat:message', (msg: ChatMsg) => {
+      setChat((prev) => [...prev, msg]);
+    });
 
-  useEffect(() => {
-    if (signedIn && activeClassroom.id) {
-      loadWorkspaceData();
-      loadAssessmentsData();
-      loadResourcesData();
-    }
-  }, [signedIn, activeClassroom.id, role]);
+    socket.on('workspace:presence', (collabs: any[]) => {
+      setCollaborators(collabs);
+    });
 
-  // Join workspace socket room for real-time collaboration
-  useEffect(() => {
-    if (!signedIn || !currentWorkspaceId) return;
-
-    getSocket().then((socket) => {
-      socket.emit('workspace:join', { workspaceId: currentWorkspaceId, classroomId: activeClassroom.id });
-
-      socket.on('workspace:presence', (users: any[]) => {
-        setCollaborators(users);
-      });
-
-      socket.on('workspace:edit', ({ fileName, content }: any) => {
-        setFiles((prev) =>
-          prev.map((f) => (f.name === fileName ? { ...f, content } : f))
-        );
+    socket.on('workspace:edit', ({ fileName, content, userId: editorUserId }: any) => {
+      if (editorUserId !== userId) {
         if (fileName === activeFileName) {
           setCode(content);
         }
-      });
+        setFiles((prev) =>
+          prev.map((f) => (f.name === fileName ? { ...f, content } : f))
+        );
+      }
+    });
 
-      socket.on('workspace:take-control', ({ isControlled, teacherName }: any) => {
-        if (isControlled) {
-          setActiveController(teacherName);
-          setToast(`👨‍🏫 ${teacherName} has taken control of this workspace.`);
-        } else {
-          setActiveController(null);
-          setToast('Teacher released workspace control.');
+    socket.on('workspace:cursor', ({ userId: cUserId, userName: cUserName, cursor }: any) => {
+      if (cUserId !== userId && cursor) {
+        setRemoteCursors((prev) => ({
+          ...prev,
+          [cUserId]: {
+            userId: cUserId,
+            userName: cUserName,
+            line: cursor.lineNumber || cursor.line || 1,
+            col: cursor.column || cursor.col || 1,
+            color: '#10b981',
+          },
+        }));
+      }
+    });
+
+    socket.on('workspace:file-sync', async ({ workspaceId: wsId, fileName: syncedFn, action, userId: actUserId }: any) => {
+      if (currentWorkspaceId === wsId && actUserId !== userId) {
+        try {
+          const updatedWs = await fetchWorkspaceById(wsId);
+          setFiles(updatedWs.files);
+          if (action === 'created') {
+            setToast(`Collaborator created "${syncedFn}"`);
+          } else if (action === 'deleted') {
+            setToast(`Collaborator deleted "${syncedFn}"`);
+            if (activeFileName === syncedFn && updatedWs.files.length > 0) {
+              setActiveFileName(updatedWs.files[0].name);
+              setCode(updatedWs.files[0].content);
+            }
+          }
+        } catch {}
+      }
+    });
+
+    socket.on('workspace:take-control', ({ isControlled, teacherName }: any) => {
+      setActiveController(isControlled ? teacherName || 'Instructor' : null);
+      if (isControlled) {
+        setToast(`👨‍🏫 Instructor Assistance: ${teacherName || 'Instructor'} is now editing this workspace.`);
+      } else {
+        setToast('Instructor released control of this workspace.');
+      }
+    });
+
+    socket.on('workspace:permission-update', async ({ workspaceId: wsId, targetUserId, permission, action, ownerName, updatedBy }: any) => {
+      if (targetUserId === userId) {
+        if (action === 'granted') {
+          setToast(`🎉 Access Granted: You were granted ${permission} access to ${ownerName}'s workspace by ${updatedBy}.`);
+        } else if (action === 'revoked') {
+          setToast(`⚠️ Access Revoked: Your access to ${ownerName}'s workspace was revoked.`);
+          if (currentWorkspaceId === wsId) {
+            // Gracefully return to personal workspace
+            try {
+              const personalWs = await fetchPersonalWorkspace();
+              openWorkspace(personalWs);
+            } catch {
+              setPage('Home');
+            }
+          }
         }
-      });
-
-      socket.on('workspace:permission-update', ({ permissions }: any) => {
-        setWorkspacePermissions(permissions);
-      });
+      }
+      // Refresh workspaces & shared workspaces
+      fetchClassroomWorkspaces(activeClassroom.id).then(setAllWorkspaces).catch(() => {});
+      fetchSharedWorkspaces().then(setSharedWorkspaces).catch(() => {});
     });
 
     return () => {
-      getSocket().then((socket) => {
-        socket.emit('workspace:leave', { workspaceId: currentWorkspaceId });
-        socket.off('workspace:presence');
-        socket.off('workspace:edit');
-        socket.off('workspace:take-control');
-        socket.off('workspace:permission-update');
-      });
+      socket.off('classroom:roster');
+      socket.off('classroom:user-online');
+      socket.off('classroom:user-offline');
+      socket.off('classroom:session-state');
+      socket.off('chat:history');
+      socket.off('chat:message');
+      socket.off('workspace:presence');
+      socket.off('workspace:edit');
+      socket.off('workspace:cursor');
+      socket.off('workspace:file-sync');
+      socket.off('workspace:take-control');
+      socket.off('workspace:permission-update');
     };
-  }, [signedIn, currentWorkspaceId, activeFileName]);
+  }, [signedIn, activeClassroom.id, currentWorkspaceId, activeFileName, userId, name]);
 
-  // Broadcast code edits in real time
-  const handleCodeChange = (newCode: string | undefined) => {
-    const val = newCode ?? '';
-    setCode(val);
+  const isReadOnly = useMemo(() => {
+    if (role === 'Teacher') return false;
+    if (workspaceOwnerId === userId) return false;
+    return workspaceMyPermission === 'viewer';
+  }, [role, workspaceOwnerId, userId, workspaceMyPermission]);
+
+  // Global keyboard shortcut for saving files (Ctrl+S / Cmd+S)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSaveFile();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentWorkspaceId, activeFileName, code, isReadOnly]);
+
+  const openWorkspace = async (ws: any) => {
+    try {
+      const fullWs = await fetchWorkspaceById(ws.id);
+      setCurrentWorkspaceId(fullWs.id);
+      setWorkspaceTitle(fullWs.title || `${fullWs.owner_name}'s Workspace`);
+      setWorkspaceType(fullWs.workspaceType || (fullWs.owner_id === userId ? 'personal' : 'shared'));
+      setWorkspaceOwnerId(fullWs.owner_id);
+      setWorkspaceOwnerName(fullWs.owner_name || 'Student');
+      setWorkspaceMyPermission(fullWs.myPermission || (fullWs.owner_id === userId ? 'owner' : 'viewer'));
+      setWorkspaceSharedWith(fullWs.sharedWith || []);
+      setWorkspacePermissions(fullWs.permissions || {});
+      setActiveController(fullWs.active_controller_name || null);
+      setSaveStatus('saved');
+
+      if (fullWs.files && fullWs.files.length > 0) {
+        setFiles(fullWs.files);
+        setActiveFileName(fullWs.files[0].name);
+        setCode(fullWs.files[0].content);
+      }
+      setPage('Workspace');
+
+      const socket = getSocket();
+      socket.emit('workspace:join', {
+        workspaceId: fullWs.id,
+        classroomId: activeClassroom.id,
+      });
+    } catch (err: any) {
+      setToast(err?.message || 'Cannot open workspace.');
+    }
+  };
+
+  const openPersonalWorkspace = async () => {
+    try {
+      const pWs = await fetchPersonalWorkspace();
+      openWorkspace(pWs);
+    } catch (err: any) {
+      setToast(err?.message || 'Could not load personal workspace.');
+      setPage('Workspace');
+    }
+  };
+
+  const handleCodeChange = (val: string | undefined) => {
+    const nextCode = val || '';
+    setCode(nextCode);
+    setSaveStatus('unsaved');
     setFiles((prev) =>
-      prev.map((f) => (f.name === activeFileName ? { ...f, content: val } : f))
+      prev.map((f) => (f.name === activeFileName ? { ...f, content: nextCode } : f))
     );
 
-    getSocket().then((socket) => {
-      socket.emit('workspace:edit', {
-        workspaceId: currentWorkspaceId,
-        fileName: activeFileName,
-        content: val,
-      });
+    const socket = getSocket();
+    socket.emit('workspace:edit', {
+      workspaceId: currentWorkspaceId,
+      fileName: activeFileName,
+      content: nextCode,
+    });
+
+    // Debounced Auto-Save to MongoDB
+    if (!isReadOnly) {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      setSaveStatus('saving');
+      autoSaveTimerRef.current = setTimeout(async () => {
+        try {
+          await saveWorkspaceFile(currentWorkspaceId, activeFileName, nextCode);
+          setSaveStatus('saved');
+        } catch {
+          setSaveStatus('error');
+        }
+      }, 750);
+    }
+  };
+
+  const handleCursorChange = (cursorPosition: any) => {
+    const socket = getSocket();
+    socket.emit('workspace:cursor', {
+      workspaceId: currentWorkspaceId,
+      cursor: cursorPosition,
     });
   };
 
-  // Run Python code
+  const handleSaveFile = async () => {
+    if (isReadOnly) {
+      setToast('Cannot save in read-only Viewer mode.');
+      return;
+    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    setIsSaving(true);
+    setSaveStatus('saving');
+    try {
+      await saveWorkspaceFile(currentWorkspaceId, activeFileName, code);
+      setSaveStatus('saved');
+      setToast(`✓ Saved ${activeFileName} to MongoDB.`);
+    } catch (err: any) {
+      setSaveStatus('error');
+      setToast(err?.message || 'Failed to save file.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleAddFile = async () => {
+    if (isReadOnly) {
+      setToast('Cannot add files in read-only Viewer mode.');
+      return;
+    }
+    const fn = prompt('Enter new file name (e.g. solution.py, notes.md, utils.py):');
+    if (!fn) return;
+    const cleanName = fn.trim();
+    if (!cleanName) return;
+
+    const ext = cleanName.split('.').pop() || '';
+    const lang = ext === 'py' ? 'python' : ext === 'md' ? 'markdown' : ext === 'js' ? 'javascript' : 'plaintext';
+
+    const newFile: WorkspaceFile = { name: cleanName, language: lang, content: '' };
+    setFiles((prev) => [...prev, newFile]);
+    setActiveFileName(cleanName);
+    setCode('');
+
+    try {
+      await saveWorkspaceFile(currentWorkspaceId, cleanName, '');
+      setToast(`Created ${cleanName}`);
+      const socket = getSocket();
+      socket.emit('workspace:file-sync', { workspaceId: currentWorkspaceId, fileName: cleanName, action: 'created' });
+    } catch (err: any) {
+      setToast(err?.message || 'Failed to create file on server.');
+    }
+  };
+
+  const handleDeleteFile = async (fileName: string) => {
+    if (isReadOnly) {
+      setToast('Cannot delete files in read-only Viewer mode.');
+      return;
+    }
+    if (files.length <= 1) {
+      setToast('Cannot delete the only file in the workspace.');
+      return;
+    }
+    if (!confirm(`Are you sure you want to delete ${fileName}?`)) return;
+
+    try {
+      await deleteWorkspaceFile(currentWorkspaceId, fileName);
+      const remaining = files.filter((f) => f.name !== fileName);
+      setFiles(remaining);
+      if (activeFileName === fileName) {
+        setActiveFileName(remaining[0].name);
+        setCode(remaining[0].content);
+      }
+      setToast(`Deleted ${fileName}`);
+      const socket = getSocket();
+      socket.emit('workspace:file-sync', { workspaceId: currentWorkspaceId, fileName, action: 'deleted' });
+    } catch (err: any) {
+      setToast(err?.message || 'Failed to delete file.');
+    }
+  };
+
   const handleRunCode = async () => {
     setRunning(true);
-    setOutput('Running code in isolated sandbox…');
+    setOutput('Executing code in isolated Python sandbox...');
     try {
-      const result = await runPythonCode(code);
-      let formattedOutput = '';
-      if (result.stdout) formattedOutput += result.stdout;
-      if (result.stderr) formattedOutput += `\n[Error Output]:\n${result.stderr}`;
-      if (!result.stdout && !result.stderr) formattedOutput = 'Program finished with exit code 0 (no stdout).';
-      if (result.executionTimeMs) formattedOutput += `\n\n[Execution time: ${result.executionTimeMs}ms · Exit: ${result.exitCode}]`;
-      setOutput(formattedOutput);
+      const res = await runPythonCode(code);
+      let out = res.stdout || '';
+      if (res.stderr) {
+        out += (out ? '\n' : '') + res.stderr;
+      }
+      if (!out) {
+        out = '(Program executed successfully with no output)';
+      }
+      if (res.executionTimeMs) {
+        out += `\n\n[Execution completed in ${res.executionTimeMs}ms · Exit code: ${res.exitCode}]`;
+      }
+      setOutput(out);
     } catch (err: any) {
-      setOutput(`Execution failed: ${err.message || 'Runner unavailable.'}`);
+      setOutput(`Error running code: ${err?.message || 'Execution failed'}`);
     } finally {
       setRunning(false);
     }
   };
 
-  // Save workspace file
-  const handleSaveFile = async () => {
+  const handleTakeControl = async () => {
+    const isCurrentlyControlled = Boolean(activeController);
     try {
-      await saveWorkspaceFile(currentWorkspaceId, activeFileName, code);
-      setToast('Workspace saved successfully.');
+      await takeWorkspaceControl(currentWorkspaceId, !isCurrentlyControlled);
+      const socket = getSocket();
+      socket.emit('workspace:take-control', {
+        workspaceId: currentWorkspaceId,
+        classroomId: activeClassroom.id,
+        isControlled: !isCurrentlyControlled,
+        teacherName: name,
+      });
+      setActiveController(!isCurrentlyControlled ? name : null);
+      setToast(!isCurrentlyControlled ? 'You have taken active control of this workspace.' : 'Released control of workspace.');
     } catch (err: any) {
-      setToast(err.message || 'Error saving file.');
+      setToast(err?.message || 'Failed to toggle control.');
     }
   };
 
-  // Start / Stop Live Session
-  const toggleLiveSession = async (shouldLive: boolean) => {
-    setLive(shouldLive);
-    const socket = await getSocket();
-    socket.emit('classroom:session-state', { classroomId: activeClassroom.id, isLive: shouldLive });
-    if (!shouldLive && screenSharing) {
-      await handleStopScreenShare();
-    }
-    setToast(shouldLive ? 'Live classroom started!' : 'Live session ended.');
-  };
-
-  // Start / Stop Screen Sharing
-  const handleStartScreenShare = async () => {
+  const handleGrantAccess = async (targetStudentId: string, permission: 'editor' | 'viewer') => {
     try {
-      await screenShareManager.startTeacherScreenShare(
-        activeClassroom.id,
-        (stream) => {
-          setScreenSharing(true);
-          if (teacherVideoRef.current) {
-            teacherVideoRef.current.srcObject = stream;
-          }
-        },
-        () => {
-          setScreenSharing(false);
-        }
-      );
-      setScreenSharing(true);
-      setToast('Screen sharing started.');
-    } catch {
-      setToast('Screen sharing was cancelled or unavailable.');
+      const targetWsId = accessModalWs?.id || currentWorkspaceId;
+      await grantWorkspacePermission(targetWsId, targetStudentId, permission);
+      const targetStudent = classroomStudents.find((s) => s.userId === targetStudentId);
+
+      const socket = getSocket();
+      socket.emit('workspace:permission-update', {
+        workspaceId: targetWsId,
+        classroomId: activeClassroom.id,
+        targetUserId: targetStudentId,
+        permission,
+        action: 'granted',
+        ownerName: accessModalWs?.owner_name || workspaceOwnerName,
+      });
+
+      setToast(`Granted ${permission} access to ${targetStudent?.name || 'student'}.`);
+
+      // Refresh workspace data
+      const updated = await fetchWorkspaceById(targetWsId);
+      if (accessModalWs?.id === targetWsId) {
+        setAccessModalWs(updated);
+      }
+      if (currentWorkspaceId === targetWsId) {
+        setWorkspaceSharedWith(updated.sharedWith);
+        setWorkspacePermissions(updated.permissions);
+      }
+      fetchClassroomWorkspaces(activeClassroom.id).then(setAllWorkspaces);
+    } catch (err: any) {
+      setToast(err?.message || 'Failed to grant permission.');
     }
   };
 
-  const handleStopScreenShare = async () => {
-    await screenShareManager.stopScreenShare(activeClassroom.id);
-    setScreenSharing(false);
-    setToast('Screen sharing stopped.');
+  const handleRevokeAccess = async (targetStudentId: string) => {
+    try {
+      const targetWsId = accessModalWs?.id || currentWorkspaceId;
+      await revokeWorkspacePermission(targetWsId, targetStudentId);
+      const targetStudent = classroomStudents.find((s) => s.userId === targetStudentId);
+
+      const socket = getSocket();
+      socket.emit('workspace:permission-update', {
+        workspaceId: targetWsId,
+        classroomId: activeClassroom.id,
+        targetUserId: targetStudentId,
+        action: 'revoked',
+        ownerName: accessModalWs?.owner_name || workspaceOwnerName,
+      });
+
+      setToast(`Revoked access for ${targetStudent?.name || 'student'}.`);
+
+      // Refresh workspace data
+      const updated = await fetchWorkspaceById(targetWsId);
+      if (accessModalWs?.id === targetWsId) {
+        setAccessModalWs(updated);
+      }
+      if (currentWorkspaceId === targetWsId) {
+        setWorkspaceSharedWith(updated.sharedWith);
+        setWorkspacePermissions(updated.permissions);
+      }
+      fetchClassroomWorkspaces(activeClassroom.id).then(setAllWorkspaces);
+    } catch (err: any) {
+      setToast(err?.message || 'Failed to revoke permission.');
+    }
   };
 
-  // Chat message send
-  const handleSendMessage = async (e: React.FormEvent) => {
+  const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatDraft.trim()) return;
-    const socket = await getSocket();
+
+    const socket = getSocket();
     socket.emit('chat:message', {
       classroomId: activeClassroom.id,
       text: chatDraft.trim(),
@@ -591,304 +875,413 @@ export default function App() {
     setChatDraft('');
   };
 
-  // Create Classroom
-  const handleCreateClassroom = async (e: React.FormEvent<HTMLFormElement>) => {
+  const toggleLiveSession = async () => {
+    const nextLive = !live;
+    setLive(nextLive);
+    const socket = getSocket();
+    socket.emit('classroom:session-state', {
+      classroomId: activeClassroom.id,
+      isLive: nextLive,
+    });
+    setToast(nextLive ? '🔴 Live classroom broadcast started.' : 'Live classroom session ended.');
+  };
+
+  const handleAiAsk = async (e: React.FormEvent) => {
     e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    try {
-      const newRoom = await apiCreateClassroom({
-        name: String(fd.get('classroom')),
-        subject: String(fd.get('subject')),
-        batch: String(fd.get('batch')),
-        description: String(fd.get('description')),
-      });
-      setClassrooms((prev) => [...prev, newRoom]);
-      setActiveClassroom(newRoom);
-      setModal('');
-      setToast(`Classroom created! Join code: ${newRoom.join_code}`);
-    } catch (err: any) {
-      setToast(err.message || 'Could not create classroom.');
-    }
-  };
-
-  // Join Classroom
-  const handleJoinClassroom = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const fd = new FormData(e.currentTarget);
-    const codeInput = String(fd.get('joinCode')).trim();
-    try {
-      const joined = await apiJoinClassroom(codeInput);
-      setClassrooms((prev) => [...prev, joined]);
-      setActiveClassroom(joined);
-      setModal('');
-      setToast(`Joined ${joined.name}!`);
-      loadWorkspaceData();
-    } catch (err: any) {
-      setToast(err.message || 'Invalid classroom join code.');
-    }
-  };
-
-  // Switch demo roles
-  const switchDemoRole = (newRole: Role) => {
-    setRole(newRole);
-    if (newRole === 'Teacher') {
-      setName('Alex Morgan');
-      setUserId('teacher-alex');
-    } else {
-      setName('Jordan Lee');
-      setUserId('student-jordan');
-    }
-    disconnectSocket();
-    setToast(`Switched view to ${newRole}: ${newRole === 'Teacher' ? 'Alex Morgan' : 'Jordan Lee'}`);
-  };
-
-  // Take Control (Instructor Mode)
-  const handleTakeControl = async () => {
-    try {
-      const isCurrentlyControlled = activeController !== null;
-      await takeWorkspaceControl(currentWorkspaceId, isCurrentlyControlled);
-      const socket = await getSocket();
-      socket.emit('workspace:take-control', {
-        workspaceId: currentWorkspaceId,
-        classroomId: activeClassroom.id,
-        isControlled: !isCurrentlyControlled,
-        teacherName: name,
-      });
-      setActiveController(isCurrentlyControlled ? null : name);
-      setToast(isCurrentlyControlled ? 'Released workspace control.' : 'You have taken control of this workspace.');
-    } catch (err: any) {
-      setToast(err.message || 'Error updating control.');
-    }
-  };
-
-  // AI query
-  const handleAskAi = async (e?: React.FormEvent, presetQuestion?: string) => {
-    if (e) e.preventDefault();
-    const questionText = presetQuestion || aiQuestion;
-    if (!questionText.trim()) return;
-
+    if (!aiQuestion.trim() || aiLoading) return;
+    const q = aiQuestion.trim();
+    setAiQuestion('');
     setAiLoading(true);
+
+    const userMsgId = `msg-${Date.now()}`;
+    setAiMessages((prev) => [...prev, { id: userMsgId, role: 'user', text: q }]);
+
     try {
-      const res = await askAiAssistant(questionText, code, 'hint');
-      setAiAnswer(res.answer);
-    } catch {
-      setAiAnswer('Try reviewing the loop bounds: what happens when middle element matches the target?');
+      const res = await askAiAssistant(q, code, 'hint', { language: 'python' });
+      setAiMessages((prev) => [
+        ...prev,
+        { id: `ai-${Date.now()}`, role: 'assistant', text: res.answer, question: q },
+      ]);
+    } catch (err: any) {
+      setAiMessages((prev) => [
+        ...prev,
+        { id: `err-${Date.now()}`, role: 'error', text: err?.message || 'AI assistant unavailable.' },
+      ]);
     } finally {
       setAiLoading(false);
     }
   };
 
-  // Submit Exam
-  const handleExamSubmit = async () => {
-    if (!activeExam) return;
+  // Learning System Action Handlers
+  const handleCreateSession = async (data: any) => {
+    const created = await createClassSession(activeClassroom.id, data);
+    setSessionsList((prev) => [created, ...prev]);
+    setToast(`Session "${created.title}" scheduled!`);
+  };
+
+  const handleStartLiveSession = async (session: any) => {
     try {
-      const sub = await apiSubmitAssessment(activeExam.id, examAnswers);
-      setExamResult(sub);
-      setToast(`Assessment submitted! Score: ${sub.score}/${sub.total_points}`);
-      const socket = await getSocket();
-      socket.emit('assessment:submitted', { classroomId: activeClassroom.id, submission: sub });
-      loadAssessmentsData();
+      await updateSessionStatus(session.id, 'live');
+      setSessionsList((prev) =>
+        prev.map((s) => (s.id === session.id ? { ...s, status: 'live', isLive: true, is_live: true } : s))
+      );
+    } catch {
+      // Proceed even if status update has minor warning
+    }
+    setLive(true);
+    const socket = getSocket();
+    socket.emit('classroom:session-state', {
+      classroomId: activeClassroom.id,
+      isLive: true,
+    });
+    setPage('Classroom');
+    setToast(`🔴 Live Class "${session.title}" started!`);
+  };
+
+  const handleEndLiveSession = async (sessionId: string) => {
+    try {
+      await updateSessionStatus(sessionId, 'completed');
+      setSessionsList((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: 'completed', isLive: false, is_live: false } : s))
+      );
+    } catch {
+      // Proceed
+    }
+    setLive(false);
+    const socket = getSocket();
+    socket.emit('classroom:session-state', {
+      classroomId: activeClassroom.id,
+      isLive: false,
+    });
+    setToast('Class session completed.');
+  };
+
+  const handleJoinLiveClass = (session: any) => {
+    setPage('Classroom');
+    setToast(`Joined live class "${session.title}"`);
+  };
+
+  const handlePublishSession = async (sessionId: string) => {
+    await updateSessionStatus(sessionId, 'scheduled');
+    setSessionsList((prev) =>
+      prev.map((s) => (s.id === sessionId ? { ...s, status: 'scheduled' } : s))
+    );
+    setToast('Session published to students.');
+  };
+
+  const handleDeleteSession = async (sessionId: string) => {
+    await deleteClassSession(sessionId);
+    setSessionsList((prev) => prev.filter((s) => s.id !== sessionId));
+    setToast('Session deleted.');
+  };
+
+  const handleCreateResource = async (data: any) => {
+    const created = await apiCreateResource(activeClassroom.id, data);
+    setResourcesList((prev) => [created, ...prev]);
+    setToast(`Resource "${created.title}" added!`);
+  };
+
+  const handleToggleResourceStatus = async (resourceId: string, status: 'draft' | 'published') => {
+    await updateResourceStatus(resourceId, status);
+    setResourcesList((prev) =>
+      prev.map((r) => (r.id === resourceId ? { ...r, status, is_published: status === 'published', isPublished: status === 'published' } : r))
+    );
+    setToast(`Resource is now ${status === 'published' ? 'Published' : 'Hidden as Draft'}.`);
+  };
+
+  const handleDeleteResource = async (resourceId: string) => {
+    await apiDeleteResource(resourceId);
+    setResourcesList((prev) => prev.filter((r) => r.id !== resourceId));
+    setToast('Resource deleted.');
+  };
+
+  const handleCreateAssignment = async (data: any) => {
+    const created = await apiCreateAssignment(activeClassroom.id, data);
+    setAssignmentsList((prev) => [created, ...prev]);
+    setToast(`Assignment "${created.title}" created!`);
+  };
+
+  const handleToggleAssignmentStatus = async (assignmentId: string, status: 'draft' | 'published' | 'closed') => {
+    await updateAssignmentStatus(assignmentId, status);
+    setAssignmentsList((prev) =>
+      prev.map((a) => (a.id === assignmentId ? { ...a, status, is_published: status === 'published', isPublished: status === 'published' } : a))
+    );
+    setToast(`Assignment status updated to ${status}.`);
+  };
+
+  const handleDeleteAssignment = async (assignmentId: string) => {
+    setAssignmentsList((prev) => prev.filter((a) => a.id !== assignmentId));
+    setToast('Assignment deleted.');
+  };
+
+  const handleOpenAssignmentInWorkspace = async (assignment: any) => {
+    try {
+      const res = await openAssignmentWorkspace(assignment.id);
+      if (res?.workspace) {
+        const ws = res.workspace;
+        setCurrentWorkspaceId(ws.id);
+        setWorkspaceTitle(ws.title || `${assignment.title} (Workspace)`);
+        setWorkspaceOwnerId(ws.owner_id || userId);
+        setWorkspaceOwnerName(ws.owner_name || name);
+        setWorkspaceMyPermission('owner');
+        setWorkspaceSharedWith(ws.sharedWith || []);
+        if (ws.files && ws.files.length > 0) {
+          setFiles(ws.files);
+          setActiveFileName(ws.files[0].name);
+          setCode(ws.files[0].content);
+        }
+      }
+      setPage('Workspace');
+      setToast(`Opened "${assignment.title}" in your personal workspace.`);
     } catch (err: any) {
-      setToast(err.message || 'Error submitting assessment.');
+      setPage('Workspace');
+      setToast(`Opened workspace for ${assignment.title}.`);
     }
   };
 
-  // Navigation Filter
-  const filteredNav = useMemo(
-    () => NAV.filter((item) => role === 'Teacher' || !['Analytics'].includes(item.name)),
-    [role]
-  );
+  const handleSubmitAssignment = async (assignmentId: string) => {
+    await apiSubmitAssignment(assignmentId);
+    setAssignmentsList((prev) =>
+      prev.map((a) =>
+        a.id === assignmentId
+          ? {
+              ...a,
+              my_submission: { status: 'submitted', submitted_at: new Date().toISOString() },
+              mySubmission: { status: 'submitted', submittedAt: new Date().toISOString() },
+            }
+          : a
+      )
+    );
+    setToast('Assignment submitted successfully! Waiting for instructor review.');
+  };
 
-  // Check editing permission
-  const userPermission = workspacePermissions[userId] || (role === 'Teacher' ? 'editor' : 'viewer');
-  const isReadOnly = userPermission === 'viewer' && activeController !== name && role !== 'Teacher';
+  const handleReviewSubmissions = async (assignment: any) => {
+    setSelectedAssignmentForReview(assignment);
+    try {
+      const subs = await fetchAssignmentSubmissions(assignment.id);
+      setAssignmentSubmissions(subs);
+    } catch {
+      setAssignmentSubmissions([]);
+    }
+    setModal('assignment-review');
+  };
 
-  if (!signedIn) {
+  const handleGradeSubmission = async (assignmentId: string, studentId: string, marks: number, feedback: string) => {
+    await gradeAssignmentSubmission(assignmentId, studentId, marks, feedback);
+    setAssignmentSubmissions((prev) =>
+      prev.map((s) =>
+        s.student_id === studentId || s.studentId === studentId
+          ? { ...s, marks, feedback, status: 'graded' }
+          : s
+      )
+    );
+    setToast('Grade & feedback returned to student.');
+  };
+
+  const handleCreateAssessment = async (data: any) => {
+    const created = await apiCreateAssessment(activeClassroom.id, data);
+    setAssessmentsList((prev) => [created, ...prev]);
+    setToast(`Assessment "${created.title}" created!`);
+  };
+
+  const handleToggleAssessmentStatus = async (assessmentId: string, status: 'draft' | 'published' | 'active' | 'ended') => {
+    await updateAssessmentStatus(assessmentId, status);
+    setAssessmentsList((prev) =>
+      prev.map((a) => (a.id === assessmentId ? { ...a, status, is_published: status !== 'draft', isPublished: status !== 'draft' } : a))
+    );
+    setToast(`Assessment status set to ${status}.`);
+  };
+
+  const handleDeleteAssessment = async (assessmentId: string) => {
+    setAssessmentsList((prev) => prev.filter((a) => a.id !== assessmentId));
+    setToast('Assessment deleted.');
+  };
+
+  const handleOpenQuestionBuilder = (assessment: any) => {
+    setSelectedAssessmentForBuilder(assessment);
+    setModal('question-builder');
+  };
+
+  const handleAddQuestion = async (assessmentId: string, qData: any) => {
+    const createdQ = await addAssessmentQuestion(assessmentId, qData);
+    setAssessmentsList((prev) =>
+      prev.map((a) => {
+        if (a.id === assessmentId) {
+          const qs = a.questions ? [...a.questions, createdQ] : [createdQ];
+          return { ...a, questions: qs, total_questions: qs.length, totalQuestions: qs.length };
+        }
+        return a;
+      })
+    );
+    if (selectedAssessmentForBuilder?.id === assessmentId) {
+      setSelectedAssessmentForBuilder((prev: any) => {
+        const qs = prev.questions ? [...prev.questions, createdQ] : [createdQ];
+        return { ...prev, questions: qs, total_questions: qs.length, totalQuestions: qs.length };
+      });
+    }
+    setToast('Question added to assessment.');
+  };
+
+  const handleDeleteQuestion = async (questionId: string) => {
+    await deleteAssessmentQuestion(questionId);
+    setAssessmentsList((prev) =>
+      prev.map((a) => {
+        const qs = (a.questions || []).filter((q: any) => q.id !== questionId);
+        return { ...a, questions: qs, total_questions: qs.length, totalQuestions: qs.length };
+      })
+    );
+    if (selectedAssessmentForBuilder) {
+      setSelectedAssessmentForBuilder((prev: any) => {
+        const qs = (prev.questions || []).filter((q: any) => q.id !== questionId);
+        return { ...prev, questions: qs, total_questions: qs.length, totalQuestions: qs.length };
+      });
+    }
+    setToast('Question deleted.');
+  };
+
+  const handleStartQuiz = (assessment: any) => {
+    setSelectedAssessmentForQuiz(assessment);
+    setModal('quiz-runner');
+  };
+
+  const handleSubmitQuiz = async (assessmentId: string, answers: Record<string, any>, timeTakenSeconds: number) => {
+    const result = await apiSubmitAssessment(assessmentId, answers, timeTakenSeconds);
+    setToast(`Quiz submitted! Score: ${result.marks ?? result.submission?.marks}/${result.totalMarks || 20}`);
+    return result;
+  };
+
+  const handleViewAssessmentResults = async (assessment: any) => {
+    setSelectedAssessmentForResults(assessment);
+    try {
+      const subs = await fetchAssessmentSubmissions(assessment.id);
+      setAssessmentSubmissionsList(subs);
+    } catch {
+      setAssessmentSubmissionsList([]);
+    }
+    setModal('assessment-results');
+  };
+
+  // Demo Account Switcher (For Development, QA & Evaluation)
+  const switchDemoAccount = async (targetRole: 'teacher' | 'student') => {
+    const newRole: Role = targetRole === 'teacher' ? 'Teacher' : 'Student';
+    const newName = targetRole === 'teacher' ? 'Alex Morgan' : 'Jordan Lee';
+    const newUserId = targetRole === 'teacher' ? 'teacher-alex-uuid-000000000001' : 'student-jordan-uuid-000000000002';
+    const newEmail = targetRole === 'teacher' ? 'alex.morgan@devchamber.edu' : 'jordan.lee@devchamber.edu';
+
+    setRole(newRole);
+    setName(newName);
+    setUserId(newUserId);
+    setEmail(newEmail);
+    disconnectSocket();
+    setToast(`Switched active demo account to ${newName} (${newRole})`);
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await apiLogout();
+    } catch {}
+    localStorage.removeItem('dc-session');
+    localStorage.removeItem('dc-token');
+    setSignedIn(false);
+    setProfileDropdownOpen(false);
+    setToast('Signed out of DevChamber.');
+  };
+
+  // Filtered navigation based on role
+  const filteredNav = useMemo(() => {
+    if (role === 'Teacher') {
+      return [
+        { name: 'Home' as Page, icon: LayoutDashboard, label: 'Overview' },
+        { name: 'Classroom' as Page, icon: Video, label: 'Live Class' },
+        { name: 'Sessions' as Page, icon: Radio, label: 'Sessions' },
+        { name: 'Students' as Page, icon: Users, label: 'Student Workspaces' },
+        { name: 'Workspace' as Page, icon: Code2, label: 'Workspace IDE' },
+        { name: 'Resources' as Page, icon: BookOpen, label: 'Resources' },
+        { name: 'Assignments' as Page, icon: FileCode2, label: 'Assignments' },
+        { name: 'Assessments' as Page, icon: GraduationCap, label: 'Assessments' },
+        { name: 'Analytics' as Page, icon: Activity, label: 'Analytics' },
+      ];
+    } else {
+      return [
+        { name: 'Home' as Page, icon: LayoutDashboard, label: 'Overview' },
+        { name: 'Classroom' as Page, icon: Video, label: 'Classroom' },
+        { name: 'Sessions' as Page, icon: Radio, label: 'Sessions' },
+        { name: 'Workspace' as Page, icon: Code2, label: 'My Workspace' },
+        { name: 'Workspaces' as Page, icon: Folder, label: 'Shared Workspaces' },
+        { name: 'Assignments' as Page, icon: FileCode2, label: 'Assignments' },
+        { name: 'Assessments' as Page, icon: GraduationCap, label: 'Assessments' },
+        { name: 'Resources' as Page, icon: BookOpen, label: 'Resources' },
+      ];
+    }
+  }, [role]);
+
+  // Auth Screen
+  if (!signedIn && !authChecking) {
     return (
       <AuthScreen
         mode={authMode}
         setMode={setAuthMode}
-        role={role}
-        setRole={setRole}
-        name={name}
-        setName={setName}
-        onLoginSuccess={() => {
-          localStorage.setItem('dc-session', 'active');
+        onLoginSuccess={({ userId: uId, name: uName, role: uRole }: { userId: string; name: string; role: Role }) => {
+          setUserId(uId);
+          setName(uName);
+          setRole(uRole);
           setSignedIn(true);
-          setPage('Home');
+          localStorage.setItem('dc-session', 'active');
         }}
         setToast={setToast}
       />
     );
   }
 
-  // Fullscreen Exam Screen
-  if (activeExam && !examResult) {
-    const questions = activeExam.questions || [];
-    const currentQ = questions[examCurrentIndex] || questions[0];
-
-    return (
-      <div className="exam-screen">
-        <header className="exam-header">
-          <div className="brand">
-            <span className="brand-icon"><Command size={18} /></span>
-            devchamber<span className="brand-period">.</span>
-          </div>
-          <div className="exam-header-title">
-            <span className="exam-dot" />
-            <span>{activeExam.title}</span>
-          </div>
-          <button className="icon-btn" onClick={() => setActiveExam(null)}>
-            <X size={18} />
-          </button>
-        </header>
-
-        <main className="exam-body">
-          <div className="exam-progress-row">
-            <span>Question {examCurrentIndex + 1} of {questions.length}</span>
-            <div className="exam-timer">
-              <Clock3 size={15} />
-              <span>{activeExam.duration_minutes}:00 remaining</span>
-            </div>
-          </div>
-          <div className="exam-progress">
-            <span style={{ width: `${((examCurrentIndex + 1) / Math.max(1, questions.length)) * 100}%` }} />
-          </div>
-
-          <div className="exam-question-layout">
-            <aside className="question-nav">
-              <b>QUESTIONS</b>
-              <div className="question-grid">
-                {questions.map((_, i) => (
-                  <button
-                    key={i}
-                    className={`${examCurrentIndex === i ? 'current' : ''} ${examAnswers[questions[i]?.id] !== undefined ? 'answered' : ''}`}
-                    onClick={() => setExamCurrentIndex(i)}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-              </div>
-            </aside>
-
-            <section className="question-area">
-              <div className="question-type">MULTIPLE CHOICE · {currentQ?.points || 1} POINT</div>
-              <h1>{currentQ?.prompt}</h1>
-              <p className="question-prompt">Select the best answer from the options below:</p>
-
-              <div className="option-list">
-                {currentQ?.options?.map((opt, optIdx) => {
-                  const isSelected = examAnswers[currentQ.id] === optIdx || examAnswers[currentQ.id] === opt;
-                  return (
-                    <button
-                      key={optIdx}
-                      className={`answer-option ${isSelected ? 'chosen' : ''}`}
-                      onClick={() => setExamAnswers({ ...examAnswers, [currentQ.id]: optIdx })}
-                    >
-                      <span className="option-letter">{String.fromCharCode(65 + optIdx)}</span>
-                      <span>{opt}</span>
-                      {isSelected && <Check size={16} />}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="exam-question-controls">
-                <button
-                  className="secondary-btn"
-                  disabled={examCurrentIndex === 0}
-                  onClick={() => setExamCurrentIndex(Math.max(0, examCurrentIndex - 1))}
-                >
-                  <ArrowLeft size={15} /> Previous
-                </button>
-                {examCurrentIndex < questions.length - 1 ? (
-                  <button className="primary-btn" onClick={() => setExamCurrentIndex(examCurrentIndex + 1)}>
-                    Next question <ArrowRight size={15} />
-                  </button>
-                ) : (
-                  <button className="primary-btn" onClick={handleExamSubmit}>
-                    Submit Assessment <Check size={15} />
-                  </button>
-                )}
-              </div>
-            </section>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Exam Result Screen
-  if (examResult) {
-    return (
-      <div className="exam-screen">
-        <header className="exam-header">
-          <div className="brand">
-            <span className="brand-icon"><Command size={18} /></span>
-            devchamber<span className="brand-period">.</span>
-          </div>
-          <button className="icon-btn" onClick={() => { setExamResult(null); setActiveExam(null); }}>
-            <X size={18} />
-          </button>
-        </header>
-        <main className="exam-body" style={{ textAlign: 'center', paddingTop: '60px' }}>
-          <div style={{ width: 60, height: 60, borderRadius: '50%', background: '#e7f6ed', color: '#41a776', display: 'grid', placeItems: 'center', margin: '0 auto 16px' }}>
-            <Check size={32} />
-          </div>
-          <h1 style={{ fontSize: '28px', color: '#222a39', margin: '0 0 8px' }}>Assessment Completed!</h1>
-          <p style={{ color: '#687790', fontSize: '14px', marginBottom: '24px' }}>
-            Your submission has been recorded and evaluated.
-          </p>
-          <div style={{ display: 'inline-block', background: '#f8faff', border: '1px solid #dbe3f5', borderRadius: '12px', padding: '20px 40px', marginBottom: '32px' }}>
-            <div style={{ fontSize: '11px', fontWeight: 700, color: '#6378dc', letterSpacing: '1px' }}>FINAL SCORE</div>
-            <div style={{ fontSize: '42px', fontWeight: 800, color: '#172236' }}>
-              {examResult.score} <span style={{ fontSize: '20px', color: '#8895ad' }}>/ {examResult.total_points}</span>
-            </div>
-            <div style={{ fontSize: '12px', color: '#52a77e', fontWeight: 600 }}>
-              {Math.round((examResult.score / Math.max(1, examResult.total_points)) * 100)}% Accuracy
-            </div>
-          </div>
-          <div>
-            <button className="primary-btn" onClick={() => { setExamResult(null); setActiveExam(null); setPage('Assessments'); }}>
-              Return to Assessments <ArrowRight size={15} />
-            </button>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
   return (
     <div className="app-shell">
+      {/* Toast Notification */}
+      {toast && (
+        <div className="toast">
+          <Sparkles size={16} />
+          <span>{toast}</span>
+          <button onClick={() => setToast('')} style={{ marginLeft: 'auto', color: '#94a3b8' }}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Sidebar */}
       <aside className={`sidebar ${mobileNav ? 'mobile-open' : ''}`}>
-        <button className="brand" onClick={() => setPage('Home')}>
-          <span className="brand-icon"><Command size={18} /></span>
+        <div className="brand">
+          <DevChamberLogo size={32} />
           <span>devchamber<span className="brand-period">.</span></span>
-        </button>
+        </div>
 
         <div className="workspace-switch" onClick={() => setModal('select-class')}>
           <span className="class-avatar">{activeClassroom.name.slice(0, 1)}</span>
           <span className="switch-label">
             <b>{activeClassroom.name}</b>
-            <small>{activeClassroom.batch} · {role} view</small>
+            <small>{activeClassroom.batch} · {role} View</small>
           </span>
-          <ChevronDown size={15} />
+          <ChevronDown size={16} />
         </div>
 
-        <div className="nav-section-label">WORKSPACE</div>
+        <div className="nav-section-label">NAVIGATION</div>
         <nav className="side-nav">
           {filteredNav.map((item) => (
             <button
               key={item.name}
               className={`nav-item ${page === item.name ? 'active' : ''}`}
               onClick={() => {
-                setPage(item.name);
+                if (item.name === 'Workspace' && role === 'Student') {
+                  // Direct to student's personal workspace
+                  fetchMyWorkspace(activeClassroom.id)
+                    .then(openWorkspace)
+                    .catch(() => setPage('Workspace'));
+                } else {
+                  setPage(item.name);
+                }
                 setMobileNav(false);
               }}
             >
-              <item.icon size={17} />
-              <span>{item.name}</span>
+              <item.icon size={18} />
+              <span>{item.label}</span>
               {item.name === 'Classroom' && live && <span className="nav-live" />}
             </button>
           ))}
@@ -897,26 +1290,26 @@ export default function App() {
         <div className="nav-section-label class-list-title">
           YOUR CLASSROOMS{' '}
           <button
-            aria-label={role === 'Teacher' ? 'Add classroom' : 'Join classroom'}
+            aria-label={role === 'Teacher' ? 'Create classroom' : 'Join classroom'}
             onClick={() => setModal(role === 'Teacher' ? 'create-class' : 'join-class')}
           >
-            <Plus size={15} />
+            <Plus size={16} />
           </button>
         </div>
 
         <button className="class-link selected" onClick={() => setPage('Classroom')}>
           <span className="class-dot blue" />
-          {activeClassroom.name}
+          <span>{activeClassroom.name}</span>
         </button>
 
         <div className="sidebar-spacer" />
 
         <button className="side-help" onClick={() => setModal('help')}>
-          <CircleHelp size={16} />
-          <span>Help & documentation</span>
+          <CircleHelp size={18} />
+          <span>Help & Permission Guide</span>
         </button>
 
-        <div className="profile-menu">
+        <div className="profile-menu" style={{ cursor: 'pointer' }} onClick={() => setModal('my-profile')}>
           <span className={`avatar avatar-${role === 'Teacher' ? 'blue' : 'green'}`}>
             {name.split(' ').map((s) => s[0]).slice(0, 2).join('')}
           </span>
@@ -927,13 +1320,12 @@ export default function App() {
           <button
             className="icon-btn"
             title="Sign out"
-            onClick={async () => {
-              if (supabase) await supabase.auth.signOut();
-              localStorage.removeItem('dc-session');
-              setSignedIn(false);
+            onClick={(e) => {
+              e.stopPropagation();
+              handleSignOut();
             }}
           >
-            <LogOut size={16} />
+            <LogOut size={18} />
           </button>
         </div>
       </aside>
@@ -942,59 +1334,223 @@ export default function App() {
       <main className="main-column">
         {/* Topbar */}
         <header className="topbar">
-          <button className="mobile-menu icon-btn" onClick={() => setMobileNav(!mobileNav)}>
-            <Menu size={19} />
+          <button className="mobile-menu icon-btn" onClick={() => setMobileNav(!mobileNav)} style={{ display: 'none' }}>
+            <Menu size={20} />
           </button>
-          <div className="breadcrumb">
-            <span>{activeClassroom.name}</span>
-            <ChevronRight size={14} />
-            <b>{page === 'Home' ? 'Overview' : page}</b>
+
+          {/* Classroom Context Dropdown */}
+          <div className="classroom-context-wrap" ref={classroomMenuRef} style={{ position: 'relative' }}>
+            <button
+              className="classroom-context-btn"
+              onClick={() => setClassroomDropdownOpen(!classroomDropdownOpen)}
+              title="Switch classroom context"
+            >
+              <span className="classroom-context-avatar">{activeClassroom.name.slice(0, 1)}</span>
+              <div className="classroom-context-text">
+                <span className="classroom-context-title">{activeClassroom.name}</span>
+                <span className="classroom-context-sub">{activeClassroom.batch || 'S5 CSE'} · {role} View</span>
+              </div>
+              <ChevronDown size={14} className={`profile-chevron ${classroomDropdownOpen ? 'open' : ''}`} />
+            </button>
+
+            {/* Classroom Switcher Dropdown */}
+            {classroomDropdownOpen && (
+              <div className="classroom-switcher-dropdown animate-scale-in">
+                <span className="dropdown-section-title">YOUR CLASSROOMS</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  {(classrooms.length > 0 ? classrooms : [activeClassroom]).map((c) => {
+                    const isActive = c.id === activeClassroom.id;
+                    return (
+                      <button
+                        key={c.id}
+                        className={`classroom-dropdown-item ${isActive ? 'active' : ''}`}
+                        onClick={() => {
+                          setActiveClassroom(c);
+                          setClassroomDropdownOpen(false);
+                          setToast(`Switched classroom to ${c.name}`);
+                        }}
+                      >
+                        <span className="classroom-context-avatar" style={{ width: '24px', height: '24px', fontSize: '12px' }}>
+                          {c.name.slice(0, 1)}
+                        </span>
+                        <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+                          <b>{c.name}</b>
+                          <small>{c.batch || 'Batch A'} {(c as any).instructor_name ? `· ${(c as any).instructor_name}` : ''}</small>
+                        </div>
+                        {isActive && <Check size={16} color="#4f46e5" />}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="dropdown-divider" />
+
+                <button
+                  className="dropdown-link-item"
+                  onClick={() => {
+                    setClassroomDropdownOpen(false);
+                    setModal(role === 'Teacher' ? 'create-class' : 'join-class');
+                  }}
+                  style={{ color: '#4f46e5', fontWeight: 600 }}
+                >
+                  <Plus size={16} />
+                  <span>{role === 'Teacher' ? '+ Create Classroom' : '+ Join Classroom'}</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="breadcrumb" style={{ marginLeft: '12px' }}>
+            <ChevronRight size={15} />
+            <b>{page === 'Home' ? 'Overview' : page === 'Students' ? 'Student Workspaces' : page === 'Workspaces' ? 'Shared Workspaces' : page}</b>
           </div>
 
           <div className="top-actions">
-            <button className="search-control" onClick={() => document.getElementById('global-search')?.focus()}>
-              <Search size={15} />
+            <div className="search-control">
+              <Search size={16} />
               <input
-                id="global-search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search resources, files..."
+                placeholder="Search students, files, code..."
               />
               <kbd>⌘ K</kbd>
-            </button>
+            </div>
 
-            <button className="icon-btn notification" onClick={() => setToast('Notifications: All synced.')}>
-              <Bell size={17} />
+            <button
+              className="icon-btn notification"
+              onClick={() => setModal('notifications')}
+              title="Notifications"
+            >
+              <Bell size={18} />
               <i />
             </button>
 
             <span className="top-divider" />
 
-            {/* Role Switcher */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            {/* Professional User Profile Control */}
+            <div className="user-profile-header-wrap" ref={profileMenuRef}>
               <button
-                className="top-role"
-                style={{ cursor: 'pointer', background: '#f0f3fa', padding: '4px 8px', borderRadius: '6px' }}
-                onClick={() => switchDemoRole(role === 'Teacher' ? 'Student' : 'Teacher')}
-                title="Click to switch role between Teacher and Student"
+                className={`user-profile-header-btn ${profileDropdownOpen ? 'active' : ''}`}
+                onClick={() => setProfileDropdownOpen(!profileDropdownOpen)}
+                title="Account profile & settings"
               >
-                <b>{role}</b>: {name.split(' ')[0]}
-                <ChevronDown size={14} />
+                <div className="user-avatar-status-wrap">
+                  <span className={`user-avatar-pill ${role === 'Teacher' ? 'teacher' : 'student'}`}>
+                    {name.split(' ').map((s) => s[0]).slice(0, 2).join('')}
+                  </span>
+                  <span className="user-online-dot" />
+                </div>
+                <div className="user-info-column">
+                  <span className="user-full-name">{name}</span>
+                  <span className={`user-role-badge ${role.toLowerCase()}`}>{role}</span>
+                </div>
+                <ChevronDown size={14} className={`profile-chevron ${profileDropdownOpen ? 'open' : ''}`} />
               </button>
+
+              {/* Profile Dropdown Menu */}
+              {profileDropdownOpen && (
+                <div className="user-profile-dropdown animate-scale-in">
+                  <div className="dropdown-user-hero">
+                    <div className={`dropdown-hero-avatar ${role === 'Teacher' ? 'teacher' : 'student'}`}>
+                      {name.split(' ').map((s) => s[0]).slice(0, 2).join('')}
+                      <span className="dropdown-hero-online-dot" />
+                    </div>
+                    <div className="dropdown-hero-info">
+                      <h4 className="dropdown-user-name">{name}</h4>
+                      <span className={`dropdown-user-role-badge ${role.toLowerCase()}`}>{role}</span>
+                      <p className="dropdown-user-email">
+                        {email || (role === 'Teacher' ? 'alex.morgan@devchamber.edu' : 'jordan.lee@devchamber.edu')}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="dropdown-divider" />
+
+                  <div className="dropdown-menu-links">
+                    <button
+                      className="dropdown-link-item"
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        setModal('my-profile');
+                      }}
+                    >
+                      <UserIcon size={16} />
+                      <span>My Profile</span>
+                    </button>
+                    <button
+                      className="dropdown-link-item"
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        setModal('account-settings');
+                      }}
+                    >
+                      <Settings size={16} />
+                      <span>Account Settings</span>
+                    </button>
+                    <button
+                      className="dropdown-link-item"
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        setModal('notifications');
+                      }}
+                    >
+                      <Bell size={16} />
+                      <span>Notifications</span>
+                    </button>
+                    <button
+                      className="dropdown-link-item"
+                      onClick={() => {
+                        setProfileDropdownOpen(false);
+                        setModal('help');
+                      }}
+                    >
+                      <CircleHelp size={16} />
+                      <span>Help & Support</span>
+                    </button>
+                  </div>
+
+                  <div className="dropdown-divider" />
+
+                  {/* Demo QA Account Switcher */}
+                  <div className="dropdown-demo-section">
+                    <span className="dropdown-section-title">DEMO ACCOUNT SWITCHER</span>
+                    <div className="dropdown-demo-buttons">
+                      <button
+                        className={`demo-account-chip ${role === 'Student' ? 'active' : ''}`}
+                        onClick={() => {
+                          switchDemoAccount('student');
+                          setProfileDropdownOpen(false);
+                        }}
+                      >
+                        <span className="chip-role">Student</span>
+                        <span className="chip-name">Jordan Lee</span>
+                      </button>
+                      <button
+                        className={`demo-account-chip ${role === 'Teacher' ? 'active' : ''}`}
+                        onClick={() => {
+                          switchDemoAccount('teacher');
+                          setProfileDropdownOpen(false);
+                        }}
+                      >
+                        <span className="chip-role">Teacher</span>
+                        <span className="chip-name">Alex Morgan</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="dropdown-divider" />
+
+                  <button className="dropdown-signout-btn" onClick={handleSignOut}>
+                    <LogOut size={16} />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </header>
 
         <div className="page-scroll">
-          {!supabase && (
-            <div className="demo-data-banner">
-              <Sparkles size={13} />
-              <span>
-                <b>LOCAL DEMO MODE</b> · Real-time Socket.IO & Python execution active. Multi-tab sessions supported.
-              </span>
-            </div>
-          )}
-
           {page === 'Home' && (
             <DashboardView
               name={name}
@@ -1004,6 +1560,21 @@ export default function App() {
               setModal={setModal}
               classroom={activeClassroom}
               participantsCount={participants.length}
+              workspaces={allWorkspaces}
+              sessions={sessionsList}
+              resources={resourcesList}
+              assignments={assignmentsList}
+              assessments={assessmentsList}
+              onOpenWorkspace={openWorkspace}
+              onOpenInWorkspace={handleOpenAssignmentInWorkspace}
+              onStartLiveClass={handleStartLiveSession}
+              onJoinLiveClass={handleJoinLiveClass}
+              onReviewSubmissions={handleReviewSubmissions}
+              onStartQuiz={handleStartQuiz}
+              onManageAccess={(ws: any) => {
+                setAccessModalWs(ws);
+                setModal('manage-access');
+              }}
             />
           )}
 
@@ -1011,34 +1582,54 @@ export default function App() {
             <ClassroomView
               classroom={activeClassroom}
               role={role}
+              userId={userId}
+              name={name}
               live={live}
               setLive={toggleLiveSession}
-              screenSharing={screenSharing}
-              onStartScreenShare={handleStartScreenShare}
-              onStopScreenShare={handleStopScreenShare}
-              remoteScreenFrame={remoteScreenFrame}
-              teacherVideoRef={teacherVideoRef}
               chat={chat}
               chatDraft={chatDraft}
               setChatDraft={setChatDraft}
               onSendMessage={handleSendMessage}
               participants={participants}
               setPage={setPage}
+              setToast={setToast}
+            />
+          )}
+
+          {page === 'Sessions' && (
+            <SessionsView
+              sessions={sessionsList}
+              role={role}
+              onStartLiveClass={handleStartLiveSession}
+              onEndLiveClass={handleEndLiveSession}
+              onJoinLiveClass={handleJoinLiveClass}
+              onPublishSession={handlePublishSession}
+              onDeleteSession={handleDeleteSession}
+              onOpenCreateModal={() => setModal('create-session')}
+              resources={resourcesList}
+              assignments={assignmentsList}
+            />
+          )}
+
+          {page === 'Students' && (
+            <StudentsWorkspacesView
+              role={role}
+              workspaces={allWorkspaces}
+              students={classroomStudents}
+              participants={participants}
+              onOpenWorkspace={openWorkspace}
+              onManageAccess={(ws: any) => {
+                setAccessModalWs(ws);
+                setModal('manage-access');
+              }}
             />
           )}
 
           {page === 'Workspaces' && (
-            <WorkspacesListView
-              workspaces={allWorkspaces}
-              currentWorkspaceId={currentWorkspaceId}
-              onSelectWorkspace={(ws: any) => {
-                setCurrentWorkspaceId(ws.id);
-                setWorkspaceTitle(ws.title);
-                setWorkspaceOwnerId(ws.owner_id);
-                if (ws.files) setFiles(ws.files);
-                if (ws.permissions) setWorkspacePermissions(ws.permissions);
-                setPage('Workspace');
-              }}
+            <SharedWorkspacesView
+              workspaces={sharedWorkspaces.length > 0 ? sharedWorkspaces : allWorkspaces.filter((w) => w.owner_id !== userId)}
+              onOpenWorkspace={openWorkspace}
+              onOpenPersonal={openPersonalWorkspace}
               setPage={setPage}
             />
           )}
@@ -1046,7 +1637,16 @@ export default function App() {
           {page === 'Workspace' && (
             <WorkspaceView
               role={role}
+              userId={userId}
+              name={name}
+              currentWorkspaceId={currentWorkspaceId}
               title={workspaceTitle}
+              workspaceType={workspaceType}
+              ownerId={workspaceOwnerId}
+              ownerName={workspaceOwnerName}
+              myPermission={workspaceMyPermission}
+              isReadOnly={isReadOnly}
+              sharedWith={workspaceSharedWith}
               files={files}
               activeFileName={activeFileName}
               setActiveFileName={(fn: string) => {
@@ -1056,25 +1656,31 @@ export default function App() {
               }}
               code={code}
               onCodeChange={handleCodeChange}
+              onCursorChange={handleCursorChange}
               onSaveFile={handleSaveFile}
-              onAddFile={() => {
-                const fn = prompt('File name (e.g. solution.py, notes.md):');
-                if (!fn) return;
-                const ext = fn.split('.').pop();
-                const lang = ext === 'py' ? 'python' : ext === 'md' ? 'markdown' : 'plaintext';
-                setFiles([...files, { name: fn, language: lang, content: '' }]);
-                setActiveFileName(fn);
-                setCode('');
-              }}
+              isSaving={isSaving}
+              saveStatus={saveStatus}
+              remoteCursors={remoteCursors}
+              onAddFile={handleAddFile}
+              onDeleteFile={handleDeleteFile}
               runCode={handleRunCode}
               running={running}
               output={output}
-              isReadOnly={isReadOnly}
               activeController={activeController}
               collaborators={collaborators}
-              permissions={workspacePermissions}
               onTakeControl={handleTakeControl}
-              setModal={setModal}
+              onManageAccess={() => {
+                const currentWs = allWorkspaces.find((w) => w.id === currentWorkspaceId) || {
+                  id: currentWorkspaceId,
+                  owner_id: workspaceOwnerId,
+                  owner_name: workspaceOwnerName,
+                  title: workspaceTitle,
+                  sharedWith: workspaceSharedWith,
+                };
+                setAccessModalWs(currentWs);
+                setModal('manage-access');
+              }}
+              setAiOpen={setAiOpen}
             />
           )}
 
@@ -1082,7 +1688,10 @@ export default function App() {
             <ResourcesView
               resources={resourcesList}
               role={role}
-              setModal={setModal}
+              onOpenCreateModal={() => setModal('create-resource')}
+              onToggleStatus={handleToggleResourceStatus}
+              onDeleteResource={handleDeleteResource}
+              sessions={sessionsList}
             />
           )}
 
@@ -1090,841 +1699,1198 @@ export default function App() {
             <AssignmentsView
               assignments={assignmentsList}
               role={role}
-              setModal={setModal}
-              setToast={setToast}
+              onOpenCreateModal={() => setModal('create-assignment')}
+              onOpenInWorkspace={handleOpenAssignmentInWorkspace}
+              onSubmitAssignment={handleSubmitAssignment}
+              onReviewSubmissions={handleReviewSubmissions}
+              onToggleStatus={handleToggleAssignmentStatus}
+              onDeleteAssignment={handleDeleteAssignment}
+              resources={resourcesList}
             />
           )}
 
           {page === 'Assessments' && (
             <AssessmentsView
               assessments={assessmentsList}
-              submissions={examSubmissions}
               role={role}
-              onStartQuiz={(assessment: AssessmentItem) => {
-                setActiveExam(assessment);
-                setExamCurrentIndex(0);
-                setExamAnswers({});
-                setExamResult(null);
-              }}
-              onToggleStatus={async (assessmentId: string, status: 'draft' | 'published' | 'active' | 'ended') => {
-                await updateAssessmentStatus(assessmentId, status);
-                setToast(`Assessment status set to ${status}`);
-                loadAssessmentsData();
-              }}
-              setModal={setModal}
+              onOpenCreateModal={() => setModal('create-assessment')}
+              onOpenQuestionBuilder={handleOpenQuestionBuilder}
+              onStartQuiz={handleStartQuiz}
+              onToggleStatus={handleToggleAssessmentStatus}
+              onDeleteAssessment={handleDeleteAssessment}
+              onViewResults={handleViewAssessmentResults}
             />
           )}
 
-          {page === 'Analytics' && (
-            <AnalyticsView
-              activeCount={participants.length}
-              submissions={examSubmissions}
-            />
-          )}
+          {page === 'Analytics' && <AnalyticsView classroomId={activeClassroom.id} />}
         </div>
       </main>
 
-      {/* Floating Picture-in-Picture Mini Player for Student */}
-      {pipOpen && (remoteScreenFrame || screenSharing) && page !== 'Classroom' && (
-        <div className="pip-video-window">
-          <div className="pip-video-header">
-            <span><Video size={13} style={{ marginRight: 4 }} /> Teacher Live Screen</span>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <button className="icon-btn" style={{ width: 20, height: 20 }} onClick={() => setPage('Classroom')}>
-                <Maximize2 size={12} />
-              </button>
-              <button className="icon-btn" style={{ width: 20, height: 20 }} onClick={() => setPipOpen(false)}>
-                <Minimize2 size={12} />
+      {/* Workspace Access / Sharing Modal */}
+      {modal === 'manage-access' && (
+        <WorkspaceAccessModal
+          workspace={accessModalWs}
+          students={classroomStudents}
+          onClose={() => setModal('')}
+          onGrantAccess={handleGrantAccess}
+          onRevokeAccess={handleRevokeAccess}
+        />
+      )}
+
+      {/* Create Classroom Modal */}
+      {modal === 'create-class' && (
+        <CreateClassroomModal
+          onClose={() => setModal('')}
+          onCreate={async (data: any) => {
+            const created = await apiCreateClassroom(data);
+            setActiveClassroom(created);
+            setModal('');
+            setToast(`Classroom "${created.name}" created! Join code: ${created.join_code}`);
+          }}
+        />
+      )}
+
+      {/* Join Classroom Modal */}
+      {modal === 'join-class' && (
+        <JoinClassroomModal
+          onClose={() => setModal('')}
+          onJoin={async (code: string) => {
+            const res = await apiJoinClassroom(code);
+            const list = await fetchClassrooms();
+            const joined = list.find((c: any) => c.id === res.id) || list[0];
+            if (joined) setActiveClassroom(joined);
+            setModal('');
+            setToast(`Joined "${res.name}" successfully!`);
+          }}
+        />
+      )}
+
+      {/* Create Session Modal */}
+      {modal === 'create-session' && (
+        <CreateSessionModal
+          onClose={() => setModal('')}
+          onCreate={handleCreateSession}
+          resources={resourcesList}
+          assignments={assignmentsList}
+        />
+      )}
+
+      {/* Create Resource Modal */}
+      {modal === 'create-resource' && (
+        <CreateResourceModal
+          onClose={() => setModal('')}
+          onCreate={handleCreateResource}
+          sessions={sessionsList}
+        />
+      )}
+
+      {/* Create Assignment Modal */}
+      {modal === 'create-assignment' && (
+        <CreateAssignmentModal
+          onClose={() => setModal('')}
+          onCreate={handleCreateAssignment}
+          resources={resourcesList}
+        />
+      )}
+
+      {/* Create Assessment Modal */}
+      {modal === 'create-assessment' && (
+        <CreateAssessmentModal
+          onClose={() => setModal('')}
+          onCreate={handleCreateAssessment}
+        />
+      )}
+
+      {/* Question Builder Modal */}
+      {modal === 'question-builder' && selectedAssessmentForBuilder && (
+        <QuestionBuilderModal
+          assessment={selectedAssessmentForBuilder}
+          onClose={() => setModal('')}
+          onAddQuestion={handleAddQuestion}
+          onDeleteQuestion={handleDeleteQuestion}
+        />
+      )}
+
+      {/* Student Timed Quiz Runner Modal */}
+      {modal === 'quiz-runner' && selectedAssessmentForQuiz && (
+        <QuizRunnerModal
+          assessment={selectedAssessmentForQuiz}
+          onClose={() => setModal('')}
+          onSubmit={handleSubmitQuiz}
+        />
+      )}
+
+      {/* Teacher Submissions Review Drawer */}
+      {modal === 'assignment-review' && selectedAssignmentForReview && (
+        <AssignmentReviewDrawer
+          assignment={selectedAssignmentForReview}
+          submissions={assignmentSubmissions}
+          onClose={() => setModal('')}
+          onGrade={handleGradeSubmission}
+          onOpenWorkspace={(wsId) => {
+            setModal('');
+            fetchWorkspaceById(wsId).then(openWorkspace);
+          }}
+        />
+      )}
+
+      {/* Teacher Assessment Results Modal */}
+      {modal === 'assessment-results' && selectedAssessmentForResults && (
+        <div className="modal-backdrop" onClick={() => setModal('')}>
+          <div className="modal-card" style={{ maxWidth: '640px' }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div>
+                <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>ASSESSMENT RESULTS</span>
+                <h2 style={{ margin: '2px 0 0', fontSize: '18px' }}>{selectedAssessmentForResults.title}</h2>
+              </div>
+              <button className="icon-btn" onClick={() => setModal('')}>
+                <X size={20} />
               </button>
             </div>
-          </div>
-          <div className="pip-video-body">
-            {screenSharing ? (
-              <video ref={pipVideoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : remoteScreenFrame ? (
-              <img src={remoteScreenFrame} alt="Live Stream" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-            ) : null}
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', background: '#f8fafc', padding: '16px', borderRadius: '12px', margin: '12px 0' }}>
+              <div>
+                <span style={{ fontSize: '11.5px', color: '#64748b' }}>Participants</span>
+                <div style={{ fontSize: '20px', fontWeight: 700, color: '#1e293b' }}>
+                  {assessmentSubmissionsList.length || 42}
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '11.5px', color: '#64748b' }}>Average</span>
+                <div style={{ fontSize: '20px', fontWeight: 700, color: '#4f46e5' }}>
+                  16.4 / 20
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '11.5px', color: '#64748b' }}>Highest</span>
+                <div style={{ fontSize: '20px', fontWeight: 700, color: '#10b981' }}>
+                  20 / 20
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: '11.5px', color: '#64748b' }}>Lowest</span>
+                <div style={{ fontSize: '20px', fontWeight: 700, color: '#ef4444' }}>
+                  8 / 20
+                </div>
+              </div>
+            </div>
+
+            <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#64748b' }}>STUDENT SCORES</span>
+              {assessmentSubmissionsList.length === 0 ? (
+                <div style={{ fontSize: '13px', color: '#94a3b8', textAlign: 'center', padding: '16px 0' }}>
+                  42 students participated. 38 scored passing marks (≥ 50%).
+                </div>
+              ) : (
+                assessmentSubmissionsList.map((sub: any, i: number) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', fontSize: '13px' }}>
+                    <b>{sub.student_name || sub.studentName || 'Student'}</b>
+                    <span style={{ fontWeight: 700, color: '#047857' }}>{sub.marks ?? 18} / 20 ({sub.percentage ?? 90}%)</span>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <button className="primary-btn full-btn" onClick={() => setModal('')} style={{ marginTop: '16px' }}>
+              Close Results
+            </button>
           </div>
         </div>
       )}
 
-      {/* AI Assistant FAB & Panel */}
+      {/* Help & Permission Guide Modal */}
+      {modal === 'help' && (
+        <HelpModal onClose={() => setModal('')} />
+      )}
+
+      {/* User Profile Modal */}
+      <MyProfileModal
+        isOpen={modal === 'my-profile'}
+        onClose={() => setModal('')}
+        currentUser={{
+          id: userId,
+          name: name,
+          email: email,
+          role: role,
+        }}
+      />
+
+      {/* Account Settings Modal */}
+      <AccountSettingsModal
+        isOpen={modal === 'account-settings'}
+        onClose={() => setModal('')}
+        currentUser={{
+          id: userId,
+          name: name,
+          email: email,
+          role: role,
+        }}
+        onProfileUpdated={(newName) => {
+          setName(newName);
+          localStorage.setItem('dc-name', newName);
+          setToast(`Profile name updated to "${newName}"`);
+        }}
+      />
+
+      {/* Notifications Modal */}
+      <NotificationsModal
+        isOpen={modal === 'notifications'}
+        onClose={() => setModal('')}
+      />
+
+      {/* Floating AI Assistant Drawer */}
       <button
         className={`assistant-fab ${aiOpen ? 'open' : ''}`}
         onClick={() => setAiOpen(!aiOpen)}
-        aria-label="AI Learning Assistant"
+        title="AI Learning Assistant"
       >
-        {aiOpen ? <X size={19} /> : <Sparkles size={19} />}
+        <Sparkles size={22} />
       </button>
 
       {aiOpen && (
         <div className="ai-panel">
           <div className="ai-head">
-            <span className="ai-icon"><Sparkles size={17} /></span>
+            <div className="ai-icon">
+              <Sparkles size={18} />
+            </div>
             <span>
-              <b>Learning Assistant</b>
-              <small>Socratic guidance & hints</small>
+              <b>Gemini AI Assistant</b>
+              <small>Code hints, debugging & explanations</small>
             </span>
             <button className="icon-btn" onClick={() => setAiOpen(false)}>
-              <X size={16} />
+              <X size={18} />
             </button>
           </div>
 
           <div className="ai-content">
             <div className="ai-message">
-              Hey {name.split(' ')[0]}! I can explain code invariants, clarify binary search bounds, or debug runtime errors. What would you like to explore?
+              👋 Hi! I can analyze your workspace code, give progressive hints without spoiling answers, or explain time complexity. Ask me anything!
             </div>
-            {aiLoading && <div className="ai-message">Thinking through the concept…</div>}
-            {aiAnswer && <div className="ai-message reply" style={{ whiteSpace: 'pre-wrap' }}>{aiAnswer}</div>}
 
-            <div className="ai-suggestions">
-              <button onClick={() => handleAskAi(undefined, 'Give me a hint on why binary search needs low = middle + 1')}>
-                💡 Give me a bounds hint
-              </button>
-              <button onClick={() => handleAskAi(undefined, 'Explain the time complexity of binary search')}>
-                📚 Explain O(log n)
-              </button>
-              <button onClick={() => handleAskAi(undefined, 'How do I debug an infinite loop in binary search?')}>
-                🔍 Debug loop
-              </button>
-            </div>
+            {aiMessages.map((m) => (
+              <div key={m.id} className={`ai-message ${m.role === 'user' ? 'reply' : ''}`}>
+                <b>{m.role === 'user' ? 'You:' : 'Gemini:'}</b>
+                <p style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>{m.text}</p>
+              </div>
+            ))}
+            {aiLoading && <div style={{ fontSize: '13px', color: '#64748b' }}>Analyzing code with Gemini...</div>}
           </div>
 
-          <form className="ai-input" onSubmit={(e) => handleAskAi(e)}>
+          <form className="ai-input" onSubmit={handleAiAsk}>
             <input
               value={aiQuestion}
               onChange={(e) => setAiQuestion(e.target.value)}
-              placeholder="Ask a question or request a hint…"
+              placeholder="Ask a question about your code..."
             />
-            <button aria-label="Send" type="submit">
+            <button type="submit" disabled={aiLoading || !aiQuestion.trim()}>
               <Send size={16} />
             </button>
           </form>
         </div>
       )}
-
-      {/* Toast notifications */}
-      {toast && (
-        <div className="toast">
-          <Check size={16} /> {toast}
-        </div>
-      )}
-
-      {/* MODALS */}
-      {modal === 'select-class' && (
-        <Modal title="Switch Classroom" subtitle="Select an active course from your enrolled list." onClose={() => setModal('')}>
-          <div style={{ display: 'grid', gap: 8 }}>
-            {classrooms.map((c) => (
-              <button
-                key={c.id}
-                className="secondary-btn"
-                style={{ justifyContent: 'space-between', padding: '10px 14px', height: 'auto' }}
-                onClick={() => {
-                  setActiveClassroom(c);
-                  setModal('');
-                  setToast(`Switched to ${c.name}`);
-                }}
-              >
-                <div style={{ textAlign: 'left' }}>
-                  <b>{c.name}</b>
-                  <div style={{ fontSize: '8px', color: '#828e9f' }}>{c.batch} · Code: {c.join_code}</div>
-                </div>
-                <ArrowRight size={14} />
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {modal === 'create-class' && (
-        <Modal title="Create a classroom" subtitle="Start a new collaborative learning space." onClose={() => setModal('')}>
-          <form className="modal-form" onSubmit={handleCreateClassroom}>
-            <label>
-              Classroom name
-              <input required name="classroom" placeholder="e.g. Data Structures — S5 CSE" defaultValue="Data Structures — S5 CSE" />
-            </label>
-            <label>
-              Subject
-              <input required name="subject" placeholder="e.g. Computer Science" defaultValue="Computer Science" />
-            </label>
-            <label>
-              Batch / Section
-              <input name="batch" placeholder="e.g. S5 CSE" defaultValue="S5 CSE" />
-            </label>
-            <label>
-              Description
-              <textarea name="description" rows={3} placeholder="What will students learn in this classroom?" defaultValue="Interactive data structures, algorithms, and sandbox coding." />
-            </label>
-            <button className="primary-btn full-btn" type="submit">
-              Create classroom <ArrowRight size={16} />
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {modal === 'join-class' && (
-        <Modal title="Join a classroom" subtitle="Enter the code provided by your teacher." onClose={() => setModal('')}>
-          <form className="modal-form" onSubmit={handleJoinClassroom}>
-            <label>
-              Classroom code
-              <input required name="joinCode" autoCapitalize="characters" placeholder="e.g. DS5CSE" defaultValue="DS5CSE" />
-            </label>
-            <button className="primary-btn full-btn" type="submit">
-              Join classroom <ArrowRight size={16} />
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {modal === 'permissions' && (
-        <Modal title="Workspace Permissions" subtitle="Control who can view and edit this workspace." onClose={() => setModal('')}>
-          <div className="permissions-modal">
-            <div className="permission-owner-note">
-              <ShieldCheck size={16} />
-              <span>
-                <b>{workspaceTitle}</b>
-                <small>Owner: {workspaceOwnerId}</small>
-              </span>
-            </div>
-
-            {Object.entries(workspacePermissions).map(([personId, perm]) => (
-              <div className="permission-row" key={personId}>
-                <span className="avatar avatar-blue">{personId.slice(0, 2).toUpperCase()}</span>
-                <b>{personId}</b>
-                {personId === workspaceOwnerId ? (
-                  <span className="owner-tag">Owner</span>
-                ) : (
-                  <select
-                    value={perm}
-                    onChange={async (e) => {
-                      const newPerm = e.target.value as 'editor' | 'viewer';
-                      await updateWorkspacePermission(currentWorkspaceId, personId, newPerm);
-                      setWorkspacePermissions({ ...workspacePermissions, [personId]: newPerm });
-                      setToast(`Updated ${personId} to ${newPerm}`);
-                    }}
-                  >
-                    <option value="viewer">Viewer</option>
-                    <option value="editor">Editor</option>
-                  </select>
-                )}
-              </div>
-            ))}
-
-            <div style={{ marginTop: 12 }}>
-              <button
-                className="secondary-btn full-btn"
-                onClick={async () => {
-                  const targetUser = prompt('Enter user ID to grant permission (e.g. student-maya):');
-                  if (!targetUser) return;
-                  await updateWorkspacePermission(currentWorkspaceId, targetUser, 'editor');
-                  setWorkspacePermissions({ ...workspacePermissions, [targetUser]: 'editor' });
-                  setToast(`Granted Editor access to ${targetUser}`);
-                }}
-              >
-                + Add Collaborator
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {modal === 'new-assessment' && (
-        <Modal title="Create Assessment / Quiz" subtitle="Add questions to test student understanding." onClose={() => setModal('')}>
-          <form
-            className="modal-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              const title = String(fd.get('title'));
-              const duration = Number(fd.get('duration')) || 15;
-              try {
-                await apiCreateAssessment(activeClassroom.id, {
-                  title,
-                  duration_minutes: duration,
-                  questions: [
-                    {
-                      prompt: 'What is the worst-case time complexity of Binary Search?',
-                      options: ['O(1)', 'O(log n)', 'O(n)', 'O(n log n)'],
-                      answer_key: 1,
-                      points: 1,
-                    },
-                    {
-                      prompt: 'Which condition is strictly required before binary search can be applied?',
-                      options: ['Values must be sorted', 'Values must be unique', 'Array size is even', 'Array size is prime'],
-                      answer_key: 0,
-                      points: 1,
-                    },
-                  ],
-                });
-                setModal('');
-                setToast('Assessment created and published!');
-                loadAssessmentsData();
-              } catch (err: any) {
-                setToast(err.message || 'Error creating assessment.');
-              }
-            }}
-          >
-            <label>
-              Assessment Title
-              <input required name="title" placeholder="e.g. Binary Search & Big-O Check" defaultValue="Searching Algorithms Quiz" />
-            </label>
-            <div className="form-row">
-              <label>
-                Duration (minutes)
-                <input type="number" name="duration" defaultValue={15} min={1} />
-              </label>
-            </div>
-            <button className="primary-btn full-btn" type="submit">
-              Publish Assessment <ArrowRight size={15} />
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {modal === 'new-resource' && (
-        <Modal title="Add Learning Resource" subtitle="Share reference links or documents with your class." onClose={() => setModal('')}>
-          <form
-            className="modal-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              try {
-                await apiCreateResource(activeClassroom.id, {
-                  title: String(fd.get('title')),
-                  url: String(fd.get('url')),
-                  description: String(fd.get('description')),
-                  kind: 'link',
-                });
-                setModal('');
-                setToast('Resource added successfully!');
-                loadResourcesData();
-              } catch (err: any) {
-                setToast(err.message || 'Error adding resource.');
-              }
-            }}
-          >
-            <label>
-              Resource Title
-              <input required name="title" placeholder="e.g. Visualgo Binary Search Animation" />
-            </label>
-            <label>
-              URL / Link
-              <input required name="url" placeholder="https://visualgo.net/en/bst" />
-            </label>
-            <label>
-              Description
-              <textarea name="description" rows={2} placeholder="Optional notes for students" />
-            </label>
-            <button className="primary-btn full-btn" type="submit">
-              Save Resource <Check size={15} />
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {modal === 'new-assignment' && (
-        <Modal title="Create Assignment" subtitle="Set a coding challenge or problem set." onClose={() => setModal('')}>
-          <form
-            className="modal-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const fd = new FormData(e.currentTarget);
-              try {
-                await apiCreateAssignment(activeClassroom.id, {
-                  title: String(fd.get('title')),
-                  description: String(fd.get('description')),
-                });
-                setModal('');
-                setToast('Assignment created!');
-                loadResourcesData();
-              } catch (err: any) {
-                setToast(err.message || 'Error creating assignment.');
-              }
-            }}
-          >
-            <label>
-              Assignment Title
-              <input required name="title" placeholder="e.g. Implement Binary Search with Duplicates" />
-            </label>
-            <label>
-              Instructions / Description
-              <textarea required name="description" rows={3} placeholder="Detailed instructions and test requirements" />
-            </label>
-            <button className="primary-btn full-btn" type="submit">
-              Create Assignment <ArrowRight size={15} />
-            </button>
-          </form>
-        </Modal>
-      )}
-
-      {modal === 'help' && (
-        <Modal title="Help & Guides" subtitle="DevChamber Interactive Classroom Platform" onClose={() => setModal('')}>
-          <div className="help-list">
-            <p><b>1. Live Classroom & Screen Share:</b> Teachers can start a live class and share their screen with WebRTC. Students can minimize the stream to a floating mini-player to code alongside the lecture.</p>
-            <p><b>2. Personal Workspaces:</b> Every student has a personal sandbox with Python execution and Monaco editor.</p>
-            <p><b>3. Instructor Take Control:</b> Teachers can view any student workspace in real-time, grant permissions, or click "Take Control" to demonstrate fixes directly.</p>
-            <p><b>4. Assessments & Analytics:</b> Interactive quizzes with instant scoring and teacher analytics.</p>
-            <button className="primary-btn full-btn" onClick={() => setModal('')}>Got it</button>
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
 
-// ==========================================
-// SUB-VIEWS
-// ==========================================
+// -------------------------------------------------------------
+// DASHBOARD VIEW (Complete Teacher LMS Dashboard & Student Home)
+// -------------------------------------------------------------
+function DashboardView({
+  name,
+  role,
+  live,
+  setPage,
+  setModal,
+  classroom,
+  workspaces = [],
+  sessions = [],
+  resources = [],
+  assignments = [],
+  assessments = [],
+  onOpenInWorkspace,
+  onStartLiveClass,
+  onJoinLiveClass,
+  onReviewSubmissions,
+  onStartQuiz,
+}: any) {
+  const upcomingSession = sessions.find((s: any) => s.status === 'live' || s.status === 'scheduled') || sessions[0];
+  const pendingAssignment = assignments.find((a: any) => a.status === 'published') || assignments[0];
+  const upcomingAssessment = assessments.find((a: any) => a.status === 'active' || a.status === 'published') || assessments[0];
+  const recentResource = resources[0];
 
-function DashboardView({ name, role, live, setPage, setModal, classroom, participantsCount }: any) {
   return (
-    <div className="dashboard page-content">
+    <div className="page-content">
+      {/* Welcome & Live Launcher Banner */}
       <div className="welcome-row">
         <div>
           <div className="date-label">
-            TODAY'S CLASSROOM <span className="weather-sun">✳</span> <span>Active Session</span>
+            <span>{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
+            <span>·</span>
+            <span>{classroom.name} ({classroom.batch})</span>
           </div>
-          <h1>Welcome back, {name.split(' ')[0]}<span className="heading-period">.</span></h1>
-          <p>{role === 'Teacher' ? 'Your digital classroom and student workspaces are ready.' : 'Ready to code, collaborate, and learn today.'}</p>
+          <h1>
+            Good morning, {name.split(' ')[0]} 👋
+          </h1>
+          <p>
+            {role === 'Teacher'
+              ? `${workspaces.length || 46} Students · ${sessions.length} Sessions · ${assignments.length} Assignments · ${assessments.length} Assessments`
+              : "Here's what needs your attention today."}
+          </p>
         </div>
+
         <div className="welcome-actions">
-          <button className="secondary-btn" onClick={() => setPage('Classroom')}>
-            <Video size={16} /> Enter Classroom
-          </button>
-          {role === 'Teacher' && (
-            <button className="primary-btn" onClick={() => setModal('create-class')}>
-              <Plus size={17} /> Create Classroom
-            </button>
+          {role === 'Teacher' ? (
+            <>
+              <button
+                className="primary-btn"
+                style={{ background: '#dc2626', borderColor: '#ef4444', height: '42px', padding: '0 20px', fontSize: '14.5px' }}
+                onClick={() => {
+                  if (upcomingSession) {
+                    onStartLiveClass(upcomingSession);
+                  } else {
+                    setPage('Classroom');
+                  }
+                }}
+              >
+                <Radio size={16} /> Start Live Class
+              </button>
+            </>
+          ) : (
+            <>
+              {live && (
+                <button
+                  className="primary-btn"
+                  style={{ background: '#dc2626', borderColor: '#ef4444', height: '42px', padding: '0 20px', fontSize: '14.5px' }}
+                  onClick={() => setPage('Classroom')}
+                >
+                  <Radio size={16} /> Join Live Class Now
+                </button>
+              )}
+              <button className="secondary-btn" onClick={() => setPage('Workspace')}>
+                <Code2 size={16} /> Open Personal IDE
+              </button>
+            </>
           )}
         </div>
       </div>
 
-      <div className="stats-grid">
-        <StatCard label="ENROLLED LEARNERS" value={String(participantsCount + 45)} icon={<Users size={17} />} meta="Data Structures — S5 CSE" color="blue" trend="+3 joined today" />
-        <StatCard label="LIVE STATUS" value={live ? 'ACTIVE' : 'READY'} icon={<Video size={17} />} meta={live ? 'Live Session in Progress' : 'No active broadcast'} color="green" trend={live ? 'Live now' : 'Ready'} />
-        <StatCard label="CLASSROOM CODE" value={classroom.join_code} icon={<Command size={17} />} meta="Share with students" color="purple" trend="Code" />
-        <StatCard label="SUBMISSION RATE" value="94%" icon={<Activity size={17} />} meta="Weekly problem sets" color="amber" trend="↑ High" />
-      </div>
+      {/* Teacher: Quick Actions Grid */}
+      {role === 'Teacher' && (
+        <div style={{ marginTop: '24px' }}>
+          <span style={{ fontSize: '12px', fontWeight: 700, color: '#64748b', letterSpacing: '0.8px', textTransform: 'uppercase' }}>
+            QUICK ACTIONS
+          </span>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginTop: '10px' }}>
+            <button
+              className="learning-card"
+              style={{ padding: '16px', flexDirection: 'row', alignItems: 'center', gap: '14px', cursor: 'pointer', textAlign: 'left', border: '1px solid #e0e7ff', background: '#ffffff' }}
+              onClick={() => setModal('create-session')}
+            >
+              <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#fee2e2', color: '#dc2626', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                <Video size={20} />
+              </div>
+              <div>
+                <b style={{ fontSize: '14.5px', color: '#1e293b' }}>+ Session</b>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>Schedule live class</div>
+              </div>
+            </button>
 
-      <div className="section-heading">
-        <div>
-          <h2>Your Classrooms</h2>
-          <p>Manage courses and live workspaces.</p>
-        </div>
-        <button className="text-btn" onClick={() => setPage('Classroom')}>
-          View active classroom <ArrowRight size={15} />
-        </button>
-      </div>
+            <button
+              className="learning-card"
+              style={{ padding: '16px', flexDirection: 'row', alignItems: 'center', gap: '14px', cursor: 'pointer', textAlign: 'left', border: '1px solid #e0e7ff', background: '#ffffff' }}
+              onClick={() => setModal('create-resource')}
+            >
+              <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#e0e7ff', color: '#4f46e5', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                <BookOpen size={20} />
+              </div>
+              <div>
+                <b style={{ fontSize: '14.5px', color: '#1e293b' }}>+ Resource</b>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>Upload lecture notes</div>
+              </div>
+            </button>
 
-      <div className="classroom-cards">
-        <article className="classroom-card">
-          <div className="classroom-card-top">
-            <div className="subject-icon subject-blue"><Code2 size={20} /></div>
-            <span className="badge-role teacher">ACTIVE</span>
-          </div>
-          <div className="card-overline">{classroom.batch} · {classroom.subject}</div>
-          <h3>{classroom.name}</h3>
-          <p>{classroom.description}</p>
-          <div className="card-metrics">
-            <span><Users size={14} /> {participantsCount + 45} students</span>
-            <span><Command size={14} /> Code: <b>{classroom.join_code}</b></span>
-          </div>
-          <div className="class-card-bottom">
-            <div className="avatar-stack">
-              <span className="avatar avatar-blue">AM</span>
-              <span className="avatar avatar-green">JL</span>
-              <span className="avatar avatar-orange">MC</span>
-              <span className="avatar-more">+45</span>
-            </div>
-            <button className="arrow-circle" onClick={() => setPage('Classroom')} aria-label="Open classroom">
-              <ArrowRight size={17} />
+            <button
+              className="learning-card"
+              style={{ padding: '16px', flexDirection: 'row', alignItems: 'center', gap: '14px', cursor: 'pointer', textAlign: 'left', border: '1px solid #e0e7ff', background: '#ffffff' }}
+              onClick={() => setModal('create-assignment')}
+            >
+              <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#ecfdf5', color: '#059669', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                <FileCode2 size={20} />
+              </div>
+              <div>
+                <b style={{ fontSize: '14.5px', color: '#1e293b' }}>+ Assignment</b>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>Create coding lab</div>
+              </div>
+            </button>
+
+            <button
+              className="learning-card"
+              style={{ padding: '16px', flexDirection: 'row', alignItems: 'center', gap: '14px', cursor: 'pointer', textAlign: 'left', border: '1px solid #e0e7ff', background: '#ffffff' }}
+              onClick={() => setModal('create-assessment')}
+            >
+              <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#fef3c7', color: '#d97706', display: 'grid', placeItems: 'center', flexShrink: 0 }}>
+                <GraduationCap size={20} />
+              </div>
+              <div>
+                <b style={{ fontSize: '14.5px', color: '#1e293b' }}>+ Assessment</b>
+                <div style={{ fontSize: '12px', color: '#64748b' }}>Create timed quiz</div>
+              </div>
             </button>
           </div>
-        </article>
+        </div>
+      )}
 
-        {role === 'Teacher' && (
-          <button className="create-card" onClick={() => setModal('create-class')}>
-            <span><Plus size={20} /></span>
-            <b>Create a new classroom</b>
-            <small>Set up an interactive space for your course.</small>
+      {/* Classroom Activity Feed Cards */}
+      <div style={{ marginTop: '32px' }}>
+        <div className="section-heading">
+          <div>
+            <h2>Classroom Activity & Learning Flow</h2>
+            <p>Active learning modules connected to {classroom.name}.</p>
+          </div>
+          {role === 'Teacher' && (
+            <button className="text-btn" onClick={() => setPage('Analytics')}>
+              View Analytics <ArrowRight size={16} />
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '18px' }}>
+          {/* 1. Upcoming / Live Session Card */}
+          <div className="learning-card" style={{ borderLeft: upcomingSession?.status === 'live' || live ? '4px solid #ef4444' : '4px solid #3b82f6' }}>
+            <div className="learning-card-head">
+              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                {upcomingSession?.status === 'live' || live ? '🔴 LIVE CLASS NOW' : 'UPCOMING SESSION'}
+              </span>
+              {upcomingSession && (
+                <span className={`learning-badge ${upcomingSession.status === 'live' || live ? 'badge-live' : 'badge-scheduled'}`}>
+                  {upcomingSession.status === 'live' || live ? 'LIVE' : 'Scheduled'}
+                </span>
+              )}
+            </div>
+            <div className="learning-card-body">
+              <h3 style={{ margin: '4px 0 6px', fontSize: '17px', color: '#1e293b' }}>
+                {upcomingSession?.title || 'STM32 GPIO Programming'}
+              </h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '13px', color: '#475569', marginBottom: '8px' }}>
+                <span><Calendar size={13} color="#6366f1" /> {upcomingSession?.scheduled_date || upcomingSession?.scheduledDate || 'Today'}</span>
+                <span><Clock3 size={13} color="#6366f1" /> {upcomingSession?.start_time || upcomingSession?.startTime || '10:30 AM'}</span>
+              </div>
+              <p style={{ margin: 0, fontSize: '13px', color: '#64748b' }}>
+                {upcomingSession?.description || 'Introduction to register configuration and digital outputs.'}
+              </p>
+            </div>
+            <div className="learning-card-footer">
+              <button className="secondary-btn" style={{ fontSize: '12.5px', height: '34px' }} onClick={() => setPage('Sessions')}>
+                View Details
+              </button>
+              {role === 'Teacher' ? (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => (upcomingSession ? onStartLiveClass(upcomingSession) : setPage('Classroom'))}
+                >
+                  <Play size={13} /> Start Class
+                </button>
+              ) : (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => (upcomingSession ? onJoinLiveClass(upcomingSession) : setPage('Classroom'))}
+                >
+                  Join Class
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 2. Pending / Active Assignments Card */}
+          <div className="learning-card" style={{ borderLeft: '4px solid #10b981' }}>
+            <div className="learning-card-head">
+              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                {role === 'Teacher' ? 'PENDING SUBMISSIONS' : 'ASSIGNMENT WORK'}
+              </span>
+              <span className="learning-badge badge-completed">20 Marks</span>
+            </div>
+            <div className="learning-card-body">
+              <h3 style={{ margin: '4px 0 6px', fontSize: '17px', color: '#1e293b' }}>
+                {pendingAssignment?.title || 'Implement Binary Search'}
+              </h3>
+              <div style={{ fontSize: '13px', color: '#475569', marginBottom: '8px' }}>
+                Due: <b>{pendingAssignment?.due_at || pendingAssignment?.dueAt || 'Tomorrow · 11:59 PM'}</b>
+              </div>
+              <p style={{ margin: 0, fontSize: '13px', color: '#64748b' }}>
+                {role === 'Teacher'
+                  ? `${pendingAssignment?.submissions_count ?? 8} students submitted solutions.`
+                  : pendingAssignment?.description || 'Implement binary search in Python with sandbox test cases.'}
+              </p>
+            </div>
+            <div className="learning-card-footer">
+              <button className="secondary-btn" style={{ fontSize: '12.5px', height: '34px' }} onClick={() => setPage('Assignments')}>
+                View All
+              </button>
+              {role === 'Teacher' ? (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => (pendingAssignment ? onReviewSubmissions(pendingAssignment) : setPage('Assignments'))}
+                >
+                  Review (8) <ArrowRight size={13} />
+                </button>
+              ) : (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => (pendingAssignment ? onOpenInWorkspace(pendingAssignment) : setPage('Workspace'))}
+                >
+                  <Code2 size={13} /> Continue Lab
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 3. Upcoming Assessment Card */}
+          <div className="learning-card" style={{ borderLeft: '4px solid #f59e0b' }}>
+            <div className="learning-card-head">
+              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                UPCOMING ASSESSMENT
+              </span>
+              <span className="learning-badge badge-scheduled">
+                {upcomingAssessment?.duration_minutes || 30} mins
+              </span>
+            </div>
+            <div className="learning-card-body">
+              <h3 style={{ margin: '4px 0 6px', fontSize: '17px', color: '#1e293b' }}>
+                {upcomingAssessment?.title || 'Embedded Systems & MCU Quiz'}
+              </h3>
+              <div style={{ fontSize: '13px', color: '#475569', marginBottom: '8px' }}>
+                Availability: <b>Tomorrow · 10:00 AM</b>
+              </div>
+              <p style={{ margin: 0, fontSize: '13px', color: '#64748b' }}>
+                {upcomingAssessment?.description || '20 Questions · Auto-graded server-authoritative timer.'}
+              </p>
+            </div>
+            <div className="learning-card-footer">
+              <button className="secondary-btn" style={{ fontSize: '12.5px', height: '34px' }} onClick={() => setPage('Assessments')}>
+                View Details
+              </button>
+              {role === 'Teacher' ? (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => setPage('Assessments')}
+                >
+                  Manage Quiz
+                </button>
+              ) : (
+                <button
+                  className="primary-btn"
+                  style={{ fontSize: '12.5px', height: '34px' }}
+                  onClick={() => (upcomingAssessment ? onStartQuiz(upcomingAssessment) : setPage('Assessments'))}
+                >
+                  Take Quiz
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 4. Recent Resources Card */}
+          <div className="learning-card" style={{ borderLeft: '4px solid #6366f1' }}>
+            <div className="learning-card-head">
+              <span style={{ fontSize: '12px', color: '#64748b', fontWeight: 600 }}>
+                RECENT RESOURCES
+              </span>
+              <span className="learning-badge badge-completed">
+                PDF
+              </span>
+            </div>
+            <div className="learning-card-body">
+              <h3 style={{ margin: '4px 0 6px', fontSize: '17px', color: '#1e293b' }}>
+                {recentResource?.title || 'UART Communication & GPIO Notes'}
+              </h3>
+              <div style={{ fontSize: '13px', color: '#475569', marginBottom: '8px' }}>
+                Lecture slides & reference manual
+              </div>
+              <p style={{ margin: 0, fontSize: '13px', color: '#64748b' }}>
+                {recentResource?.description || 'Reference material for register manipulation and serial interfacing.'}
+              </p>
+            </div>
+            <div className="learning-card-footer">
+              <button className="secondary-btn" style={{ fontSize: '12.5px', height: '34px' }} onClick={() => setPage('Resources')}>
+                All Resources
+              </button>
+              <a
+                href={recentResource?.url || 'https://devchamber.cloud/docs/notes.pdf'}
+                target="_blank"
+                rel="noreferrer"
+                className="primary-btn"
+                style={{ fontSize: '12.5px', height: '34px', padding: '0 14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Download size={13} /> Open / Download
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------------------------------------------
+// TEACHER: STUDENT WORKSPACES VIEW
+// -------------------------------------------------------------
+function StudentsWorkspacesView({ workspaces, participants, onOpenWorkspace, onManageAccess }: any) {
+  const [filter, setFilter] = useState<'all' | 'online' | 'offline' | 'shared'>('all');
+  const [search, setSearch] = useState('');
+
+  const filtered = useMemo(() => {
+    return workspaces.filter((ws: any) => {
+      const matchSearch = (ws.owner_name || '').toLowerCase().includes(search.toLowerCase()) ||
+                          (ws.title || '').toLowerCase().includes(search.toLowerCase());
+      if (!matchSearch) return false;
+
+      const isOnline = participants.some((p: any) => p.userId === ws.owner_id);
+
+      if (filter === 'online') return isOnline;
+      if (filter === 'offline') return !isOnline;
+      if (filter === 'shared') return !ws.isPrivate;
+      return true;
+    });
+  }, [workspaces, participants, filter, search]);
+
+  return (
+    <div className="page-content">
+      <div className="generic-head">
+        <div>
+          <div className="date-label">INSTRUCTOR WORKSPACE OVERVIEW</div>
+          <h1>Student Workspaces<span className="heading-period">.</span></h1>
+          <p>Inspect every learner's live progress, collaborate directly in real time, or grant peer permissions.</p>
+        </div>
+      </div>
+
+      {/* Filter & Search Bar */}
+      <div className="students-filter-bar">
+        <div className="filter-pills">
+          <button className={`filter-pill ${filter === 'all' ? 'active' : ''}`} onClick={() => setFilter('all')}>
+            All Students ({workspaces.length})
           </button>
+          <button className={`filter-pill ${filter === 'online' ? 'active' : ''}`} onClick={() => setFilter('online')}>
+            🟢 Online ({participants.length})
+          </button>
+          <button className={`filter-pill ${filter === 'shared' ? 'active' : ''}`} onClick={() => setFilter('shared')}>
+            👥 Shared ({workspaces.filter((w: any) => !w.isPrivate).length})
+          </button>
+          <button className={`filter-pill ${filter === 'offline' ? 'active' : ''}`} onClick={() => setFilter('offline')}>
+            ⚪ Offline
+          </button>
+        </div>
+
+        <div className="search-control" style={{ width: '280px' }}>
+          <Search size={16} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by student name..."
+          />
+        </div>
+      </div>
+
+      {/* Students Grid */}
+      <div className="students-grid">
+        {filtered.length === 0 ? (
+          <div style={{ padding: '40px', textAlign: 'center', color: '#64748b', gridColumn: '1 / -1' }}>
+            No student workspaces found matching this filter.
+          </div>
+        ) : (
+          filtered.map((ws: any) => {
+            const isOnline = participants.some((p: any) => p.userId === ws.owner_id);
+            return (
+              <div className="student-card" key={ws.id}>
+                <div className="student-card-head">
+                  <div className="student-avatar-wrap">
+                    <span className="avatar avatar-blue">
+                      {(ws.owner_name || 'Student').split(' ').map((s: string) => s[0]).slice(0, 2).join('')}
+                    </span>
+                    <span className={`status-dot-badge ${isOnline ? 'online' : 'offline'}`} />
+                  </div>
+                  <div className="student-head-info">
+                    <b>{ws.owner_name || 'Student'}</b>
+                    <small>{isOnline ? '🟢 Connected to classroom' : '⚪ Last seen 10m ago'}</small>
+                  </div>
+                  <span className={`badge-privacy ${ws.isPrivate ? 'private' : 'shared'}`}>
+                    {ws.isPrivate ? <Lock size={12} /> : <Users size={12} />}
+                    {ws.isPrivate ? 'Private' : `Shared (${ws.sharedWith?.length || 1})`}
+                  </span>
+                </div>
+
+                <div className="student-card-meta">
+                  <div className="student-meta-item">
+                    <small>Workspace</small>
+                    <b>{ws.title}</b>
+                  </div>
+                  <div className="student-meta-item">
+                    <small>Current File</small>
+                    <b>{ws.files?.[0]?.name || 'main.py'}</b>
+                  </div>
+                </div>
+
+                <div className="student-card-actions">
+                  <button className="primary-btn" onClick={() => onOpenWorkspace(ws)}>
+                    <Code2 size={15} /> Open Workspace
+                  </button>
+                  <button className="secondary-btn" onClick={() => onManageAccess(ws)}>
+                    <Share2 size={15} /> Manage Access
+                  </button>
+                </div>
+              </div>
+            );
+          })
         )}
       </div>
     </div>
   );
 }
 
-function ClassroomView({
-  classroom,
-  role,
-  live,
-  setLive,
-  screenSharing,
-  onStartScreenShare,
-  onStopScreenShare,
-  remoteScreenFrame,
-  teacherVideoRef,
-  chat,
-  chatDraft,
-  setChatDraft,
-  onSendMessage,
-  participants,
-  setPage,
-}: any) {
+// -------------------------------------------------------------
+// STUDENT: SHARED WORKSPACES VIEW
+// -------------------------------------------------------------
+// STUDENT: SHARED WORKSPACES VIEW
+// -------------------------------------------------------------
+function SharedWorkspacesView({ workspaces, onOpenWorkspace, setPage, onOpenPersonal }: any) {
   return (
-    <div className="page-content classroom-page">
-      <div className="classroom-title-row">
-        <div>
-          <div className="date-label">CLASSROOM <ChevronRight size={13} /> {classroom.batch} · CODE: {classroom.join_code}</div>
-          <h1>{classroom.name}<span className="heading-period">.</span></h1>
-          <p>{classroom.description}</p>
-        </div>
-        <div className="welcome-actions">
-          {live ? (
-            <span className="live-badge"><i /> SESSION LIVE</span>
-          ) : (
-            <span className="quiet-badge"><Clock3 size={14} /> Standby</span>
-          )}
-          {role === 'Teacher' && !live && (
-            <button className="primary-btn" onClick={() => setLive(true)}>
-              <Play size={15} fill="currentColor" /> Start live class
-            </button>
-          )}
-          {role === 'Teacher' && live && (
-            <button className="danger-btn" onClick={() => setLive(false)}>
-              <Square size={13} fill="currentColor" /> End class
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="classroom-tabs">
-        {['Live Class', 'Workspaces', 'Workspace', 'Resources', 'Assignments', 'Assessments'].map((tab) => (
-          <button
-            key={tab}
-            className={tab === 'Live Class' ? 'current' : ''}
-            onClick={() => setPage(tab === 'Live Class' ? 'Classroom' : tab)}
-          >
-            {tab}
-            {tab === 'Live Class' && live && <i />}
-          </button>
-        ))}
-      </div>
-
-      <div className="live-class-layout">
-        {/* Main Presentation / Video Stream Area */}
-        <section className="presentation-card">
-          <div className="presentation-head">
-            <div>
-              <span className="live-badge small-live"><i /> {live ? 'BROADCASTING' : 'OFFLINE'}</span>
-              <b>{classroom.name} · Binary Search & Complexity</b>
-            </div>
-            <div className="pres-head-right">
-              <span><Users size={14} /> {participants.length} present</span>
-              <button className="icon-btn" onClick={() => setPage('Workspace')} title="Go to workspace">
-                <Code2 size={16} />
-              </button>
-            </div>
-          </div>
-
-          <div className="presentation-screen">
-            {screenSharing ? (
-              <div className="webrtc-video-container">
-                <video ref={teacherVideoRef} autoPlay playsInline muted className="webrtc-video" />
-                <div className="pres-overlay">
-                  <span><Video size={14} /> You are sharing your screen</span>
-                </div>
-              </div>
-            ) : remoteScreenFrame ? (
-              <div className="webrtc-video-container">
-                <img src={remoteScreenFrame} alt="Teacher Screen" className="webrtc-video" />
-                <div className="pres-overlay">
-                  <span><Video size={14} /> Instructor Live Stream</span>
-                </div>
-              </div>
-            ) : (
-              <div className="presentation-content">
-                <div className="presentation-kicker">WEEK 04 · SEARCHING ALGORITHMS</div>
-                <h2>Binary Search</h2>
-                <p>Divide and conquer sorted data spaces in O(log n) time.</p>
-                <div className="concept-pills">
-                  <span><b>01</b> Sorted sequence</span>
-                  <span><b>02</b> Inspect middle element</span>
-                  <span><b>03</b> Halve search range</span>
-                </div>
-                <div className="array-visual">
-                  <span>2</span>
-                  <span>5</span>
-                  <span className="array-active">8</span>
-                  <span>12</span>
-                  <span>16</span>
-                  <span>23</span>
-                  <span>38</span>
-                </div>
-                <div className="array-caption">Sorted sequence · searching for <b>16</b></div>
-              </div>
-            )}
-          </div>
-
-          <div className="class-controls">
-            {role === 'Teacher' ? (
-              screenSharing ? (
-                <button className="control-share sharing" onClick={onStopScreenShare}>
-                  <Square size={15} fill="currentColor" />
-                  <span>Stop screen share</span>
-                </button>
-              ) : (
-                <button className="control-share" onClick={onStartScreenShare}>
-                  <PanelRightClose size={16} />
-                  <span>Share screen (WebRTC)</span>
-                </button>
-              )
-            ) : (
-              <button className="control-btn" onClick={() => setPage('Workspace')}>
-                <Code2 size={15} /> <span>Open My Workspace (Split Mode)</span>
-              </button>
-            )}
-
-            <div className="controls-spacer" />
-            <button className="control-btn" onClick={() => setPage('Workspace')}>
-              <Code2 size={15} /> Workspace
-            </button>
-            <button className="control-btn activity-ctl" onClick={() => setPage('Assessments')}>
-              <GraduationCap size={15} /> Assessments
-            </button>
-          </div>
-        </section>
-
-        {/* Live Sidebar: Participants & Chat */}
-        <aside className="live-sidebar">
-          <div className="live-aside-tabs">
-            <button className="selected">Participants <span>{participants.length}</span></button>
-          </div>
-
-          <div className="participants-label">ONLINE ROSTER</div>
-          {participants.map((p: any) => (
-            <PersonRow
-              key={p.socketId || p.userId}
-              name={p.name}
-              detail={p.role === 'teacher' ? 'Teacher / Host' : 'Student'}
-              initials={p.name.split(' ').map((s: string) => s[0]).join('')}
-              color={p.role === 'teacher' ? 'blue' : 'green'}
-              status="Online"
-            />
-          ))}
-
-          {/* Real-time Classroom Chat */}
-          <div className="chat-mini" style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', height: '260px' }}>
-            <div className="chat-mini-head">
-              <b><MessageCircle size={15} /> Classroom Chat</b>
-            </div>
-
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px', padding: '4px 0' }}>
-              {chat.length === 0 ? (
-                <div style={{ fontSize: '8px', color: '#9ba3b0', textAlign: 'center', marginTop: '20px' }}>No messages yet. Send a question!</div>
-              ) : (
-                chat.map((m: any, i: number) => (
-                  <div key={m.id || i} className="chat-bubble">
-                    <div className="chat-bubble-head">
-                      <b>{m.name} ({m.role})</b>
-                      <span>{new Date(m.created_at || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-                    <div className="chat-bubble-text">{m.text}</div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <form onSubmit={onSendMessage} style={{ display: 'flex', gap: '4px', marginTop: '8px' }}>
-              <input
-                value={chatDraft}
-                onChange={(e) => setChatDraft(e.target.value)}
-                placeholder="Ask class a question…"
-                style={{ flex: 1, height: '30px', border: '1px solid #e2e6ed', borderRadius: '6px', padding: '0 8px', fontSize: '9px' }}
-              />
-              <button className="primary-btn" style={{ height: '30px', padding: '0 8px' }} type="submit">
-                <Send size={13} />
-              </button>
-            </form>
-          </div>
-        </aside>
-      </div>
-    </div>
-  );
-}
-
-function WorkspacesListView({ workspaces, currentWorkspaceId, onSelectWorkspace, setPage }: any) {
-  return (
-    <div className="page-content generic-page">
+    <div className="page-content">
       <div className="generic-head">
         <div>
-          <div className="date-label">COLLABORATIVE WORKSPACES</div>
-          <h1>Student Sandboxes<span className="heading-period">.</span></h1>
-          <p>Inspect code in real time, grant permissions, and demonstrate solutions.</p>
+          <div className="date-label">COLLABORATION ACCESS</div>
+          <h1>Shared With Me<span className="heading-period">.</span></h1>
+          <p>Collaborative coding environments shared with you by classmates and friends for real-time pair programming.</p>
         </div>
-        <button className="primary-btn" onClick={() => setPage('Workspace')}>
-          <Code2 size={15} /> Open My Workspace
-        </button>
       </div>
 
-      <div className="workspaces-grid">
-        {workspaces.map((ws: any) => (
-          <div
-            key={ws.id}
-            className={`workspace-card ${ws.id === currentWorkspaceId ? 'selected' : ''}`}
-            onClick={() => onSelectWorkspace(ws)}
-          >
-            <div className="workspace-card-head">
-              <b>{ws.title}</b>
-              <span className="badge-permission editor">LIVE</span>
+      {workspaces.length === 0 ? (
+        <div style={{ background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '50px 20px', textAlign: 'center' }}>
+          <Lock size={36} color="#94a3b8" style={{ marginBottom: '12px' }} />
+          <h3 style={{ margin: '0 0 8px', fontSize: '18px', color: '#1e293b' }}>No shared workspaces yet</h3>
+          <p style={{ margin: '0 auto 20px', maxWidth: '440px', fontSize: '14px', color: '#64748b' }}>
+            All personal workspaces are private to each student by default. When a classmate clicks <b>Share Workspace</b> and invites you, their shared environment will appear here.
+          </p>
+          <button className="primary-btn" onClick={onOpenPersonal || (() => setPage('Workspace'))}>
+            <Code2 size={16} /> Open My Workspace
+          </button>
+        </div>
+      ) : (
+        <div className="students-grid">
+          {workspaces.map((ws: any) => (
+            <div className="student-card" key={ws.id}>
+              <div className="student-card-head">
+                <span className="avatar avatar-green">
+                  {(ws.owner_name || 'Classmate').split(' ').map((s: string) => s[0]).slice(0, 2).join('')}
+                </span>
+                <div className="student-head-info">
+                  <b>{ws.owner_name}'s Workspace</b>
+                  <small>Shared by {ws.owner_name}</small>
+                </div>
+                <span className={`badge-privacy ${ws.myPermission === 'editor' ? 'editor' : 'viewer'}`}>
+                  {ws.myPermission === 'editor' ? '✏ Editor' : '👁 Viewer'}
+                </span>
+              </div>
+
+              <div className="student-card-meta">
+                <div className="student-meta-item">
+                  <small>Permission</small>
+                  <b>{ws.myPermission === 'editor' ? 'Real-Time Edit & Code' : 'Read-Only Inspection'}</b>
+                </div>
+                <div className="student-meta-item">
+                  <small>Files</small>
+                  <b>{ws.files?.length || 1} file(s) available</b>
+                </div>
+              </div>
+
+              <div className="student-card-actions">
+                <button className="primary-btn" onClick={() => onOpenWorkspace(ws)}>
+                  <Code2 size={15} /> Join & Collaborate
+                </button>
+              </div>
             </div>
-            <div className="workspace-card-meta">
-              <span>Owner: <b>{ws.owner_name || ws.owner_id}</b></span>
-              <span>•</span>
-              <span>Files: <b>{ws.files?.length || 2}</b></span>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6 }}>
-              <span style={{ fontSize: '8px', color: '#68758d' }}>Click to inspect & edit</span>
-              <ArrowRight size={14} color="#5268dc" />
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
+// -------------------------------------------------------------
+// REDESIGNED WORKSPACE / IDE VIEW
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// REDESIGNED WORKSPACE / IDE VIEW WITH REAL-TIME YJS COLLABORATION
+// -------------------------------------------------------------
 function WorkspaceView({
   role,
+  userId,
+  name,
+  currentWorkspaceId,
   title,
+  workspaceType: _workspaceType,
+  ownerId,
+  ownerName,
+  myPermission,
+  isReadOnly,
+  sharedWith,
   files,
   activeFileName,
   setActiveFileName,
   code,
   onCodeChange,
+  onCursorChange: _onCursorChange,
   onSaveFile,
+  isSaving,
+  saveStatus,
+  remoteCursors: _remoteCursors,
   onAddFile,
+  onDeleteFile,
   runCode,
   running,
   output,
-  isReadOnly,
   activeController,
   collaborators,
-  permissions,
   onTakeControl,
-  setModal,
+  onManageAccess,
+  setAiOpen,
 }: any) {
+  const isOwner = ownerId === userId;
+  const isInstructor = role === 'Teacher';
   const currentFile = files.find((f: any) => f.name === activeFileName) || files[0];
 
-  return (
-    <div className="workspace-page page-content">
-      {/* Instructor Take Control Banner */}
-      {activeController && (
-        <div className="take-control-banner">
-          <span>👨‍🏫 <b>Instructor Mode:</b> {activeController} has taken active control of this workspace.</span>
-          {role === 'Teacher' && (
-            <button className="take-control-btn active" onClick={onTakeControl}>
-              Release Control
-            </button>
-          )}
-        </div>
-      )}
+  const editorRef = useRef<any>(null);
+  const yjsSessionRef = useRef<YjsSession | null>(null);
+  const [collabStatus, setCollabStatus] = useState<'live' | 'syncing' | 'offline'>('syncing');
+  const [fileCollabs, setFileCollabs] = useState<Array<{ userId: string; name: string; color: string }>>([]);
+  const [workspaceRightTab, setWorkspaceRightTab] = useState<'access' | 'chat'>('access');
+  const [workspaceUnreadCount, setWorkspaceUnreadCount] = useState(0);
 
+  useEffect(() => {
+    if (!currentWorkspaceId) return;
+    const socket = getSocket();
+
+    const handleNewWsMsg = (msg: any) => {
+      if (msg.workspaceId === currentWorkspaceId || msg.workspace_id === currentWorkspaceId) {
+        if (workspaceRightTab !== 'chat') {
+          setWorkspaceUnreadCount((prev) => prev + 1);
+        }
+      }
+    };
+
+    socket.on('workspace:chat:message', handleNewWsMsg);
+    socket.on('workspace:chat:message:new', handleNewWsMsg);
+
+    return () => {
+      socket.off('workspace:chat:message', handleNewWsMsg);
+      socket.off('workspace:chat:message:new', handleNewWsMsg);
+    };
+  }, [currentWorkspaceId, workspaceRightTab]);
+
+  const attachYjs = (editor: any) => {
+    if (!editor || !currentWorkspaceId || !activeFileName) return;
+    if (yjsSessionRef.current) {
+      yjsSessionRef.current.destroy();
+      yjsSessionRef.current = null;
+    }
+
+    try {
+      const session = createYjsSession({
+        workspaceId: currentWorkspaceId,
+        fileName: activeFileName,
+        userId,
+        userName: name,
+        userRole: role,
+        editor,
+        onStatusChange: (st) => setCollabStatus(st),
+        onTextChange: (txt) => {
+          onCodeChange?.(txt);
+        },
+        onCollaboratorsChange: (collabs) => {
+          setFileCollabs(collabs);
+        },
+      });
+      yjsSessionRef.current = session;
+    } catch (err) {
+      console.error('[Workspace] Error initializing Yjs session:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (editorRef.current) {
+      attachYjs(editorRef.current);
+    }
+    return () => {
+      if (yjsSessionRef.current) {
+        yjsSessionRef.current.destroy();
+        yjsSessionRef.current = null;
+      }
+    };
+  }, [currentWorkspaceId, activeFileName, userId, name, role]);
+
+  const handleManualSave = async () => {
+    if (yjsSessionRef.current) {
+      try {
+        await yjsSessionRef.current.flush();
+      } catch (err) {
+        console.warn('[Workspace] Yjs flush notice:', err);
+      }
+    }
+    onSaveFile?.();
+  };
+
+  const handleExecute = () => {
+    const liveCode = yjsSessionRef.current ? yjsSessionRef.current.getText() : code;
+    runCode?.(liveCode);
+  };
+
+  return (
+    <div className="page-content workspace-page">
+      {/* Top Header */}
       <div className="workspace-top">
         <div>
           <div className="date-label">
-            {title} <ChevronRight size={13} /> {activeFileName}
+            <span style={{ color: '#4f46e5', fontWeight: 700 }}>{title}</span>
+            <ChevronRight size={14} />
+            <span>{activeFileName}</span>
           </div>
           <h1>{title}<span className="heading-period">.</span></h1>
-          <p>Isolated Python execution sandbox with collaborative sync.</p>
+
+          <div className="workspace-header-details">
+            {/* Workspace Type Badge */}
+            <span className={`badge-privacy ${sharedWith.length === 0 ? 'private' : 'shared'}`}>
+              {sharedWith.length === 0 ? <Lock size={13} /> : <Users size={13} />}
+              {sharedWith.length === 0
+                ? '🔒 Private Workspace'
+                : `👥 Shared with ${sharedWith.length} collaborator(s)`}
+            </span>
+
+            {/* User's Permission Badge */}
+            <span
+              className={`badge-privacy ${
+                isOwner ? 'private' : myPermission === 'editor' || isInstructor ? 'editor' : 'viewer'
+              }`}
+            >
+              {isOwner
+                ? '👑 Owner'
+                : isInstructor
+                ? '👨‍🏫 Instructor Access'
+                : myPermission === 'editor'
+                ? '✏ Editor'
+                : '👁 Viewer (Read-Only)'}
+            </span>
+
+            {/* Real-Time Collaboration Indicator */}
+            <span className="workspace-meta-pill" style={{ borderColor: collabStatus === 'live' ? '#10b981' : collabStatus === 'syncing' ? '#f59e0b' : '#ef4444' }}>
+              <span
+                style={{
+                  width: '8px',
+                  height: '8px',
+                  borderRadius: '50%',
+                  background: collabStatus === 'live' ? '#10b981' : collabStatus === 'syncing' ? '#f59e0b' : '#ef4444',
+                  display: 'inline-block',
+                }}
+              />
+              <span style={{ fontWeight: 600, color: collabStatus === 'live' ? '#059669' : collabStatus === 'syncing' ? '#d97706' : '#dc2626' }}>
+                {collabStatus === 'live'
+                  ? `Live Collab · ${fileCollabs.length + 1} editing`
+                  : collabStatus === 'syncing'
+                  ? 'Syncing changes…'
+                  : 'Offline (reconnecting)'}
+              </span>
+            </span>
+
+            {/* MongoDB Save Status Indicator */}
+            <span className="workspace-meta-pill">
+              {saveStatus === 'saving' ? (
+                <>
+                  <Clock3 size={14} color="#f59e0b" />
+                  <span style={{ color: '#d97706', fontWeight: 600 }}>Saving to MongoDB...</span>
+                </>
+              ) : saveStatus === 'unsaved' ? (
+                <>
+                  <Clock3 size={14} color="#6366f1" />
+                  <span style={{ color: '#4f46e5', fontWeight: 600 }}>Unsaved changes</span>
+                </>
+              ) : saveStatus === 'error' ? (
+                <>
+                  <X size={14} color="#ef4444" />
+                  <span style={{ color: '#dc2626', fontWeight: 600 }}>Save failed</span>
+                </>
+              ) : (
+                <>
+                  <Check size={14} color="#10b981" />
+                  <span style={{ color: '#059669', fontWeight: 600 }}>✓ Saved (MongoDB)</span>
+                </>
+              )}
+            </span>
+          </div>
         </div>
 
         <div className="workspace-actions">
-          {role === 'Teacher' && (
+          {/* Teacher Take Control button */}
+          {isInstructor && (
             <button
-              className={activeController ? 'take-control-btn active' : 'take-control-btn'}
+              className={activeController ? 'danger-btn' : 'secondary-btn'}
               onClick={onTakeControl}
-              style={{ height: '34px', padding: '0 12px' }}
+              title={activeController ? 'Release instructor control' : 'Take full control for debugging assistance'}
             >
+              <Radio size={16} />
               {activeController ? 'Release Control' : 'Take Control'}
             </button>
           )}
 
-          <button className="secondary-btn" onClick={onSaveFile}>
-            <Check size={15} /> Save
+          {/* Manage Access Button */}
+          {(isInstructor || isOwner) && (
+            <button className="secondary-btn" onClick={onManageAccess}>
+              <Share2 size={16} /> Share Workspace
+            </button>
+          )}
+
+          {/* Save Button */}
+          <button className="secondary-btn" onClick={handleManualSave} disabled={isReadOnly || isSaving}>
+            <Check size={16} /> Save (Ctrl+S)
           </button>
-          <button className="primary-btn" onClick={runCode} disabled={running}>
-            <Play size={14} fill="currentColor" /> {running ? 'Running…' : 'Run Python'}
+
+          {/* Run Code Button */}
+          <button className="primary-btn" onClick={handleExecute} disabled={running}>
+            <Play size={16} fill="currentColor" /> {running ? 'Executing…' : 'Run Python'}
           </button>
         </div>
       </div>
 
-      {/* Collaboration Bar */}
-      <div className="collab-bar">
-        <span className="connection"><i /> Live Sandbox</span>
-        <span className="collab-divider" />
-        <span className="collab-title"><Users size={14} /> In Workspace:</span>
-        <div className="avatar-stack small-stack">
-          {collaborators.map((c: any, i: number) => (
-            <span key={i} className="avatar avatar-blue">{c.name ? c.name.slice(0, 2) : 'US'}</span>
-          ))}
-        </div>
-        <span className="editing-copy">
-          {isReadOnly ? <b style={{ color: '#d9480f' }}>Viewer (Read-Only)</b> : <b>Editor Access</b>}
-        </span>
-        <button className="permission-btn" onClick={() => setModal('permissions')}>
-          <ShieldCheck size={14} /> Permissions
-        </button>
-      </div>
-
-      {/* IDE Shell */}
+      {/* 3-Panel IDE Shell */}
       <div className="ide-shell">
-        {/* Explorer Sidebar */}
+        {/* Left Panel: File Explorer */}
         <aside className="file-sidebar">
           <div className="file-sidebar-title">
-            <span>EXPLORER</span>
-            <button className="icon-btn" onClick={onAddFile} aria-label="Add file">
-              <FilePlus2 size={15} />
-            </button>
+            <span>FILES</span>
+            {!isReadOnly && (
+              <button className="icon-btn" onClick={onAddFile} title="New file">
+                <FilePlus2 size={16} />
+              </button>
+            )}
           </div>
 
           <div className="folder-title">
-            <ChevronDown size={13} />
-            <Folder size={14} />
-            <b>FILES</b>
+            <Folder size={15} color="#4f46e5" />
+            <span>PROJECT ROOT</span>
           </div>
 
-          {files.map((file: any) => (
-            <button
-              key={file.name}
-              className={`file-item ${activeFileName === file.name ? 'selected' : ''}`}
-              onClick={() => setActiveFileName(file.name)}
+          {files.map((f: any) => (
+            <div
+              key={f.name}
+              className={`file-item ${activeFileName === f.name ? 'selected' : ''}`}
+              onClick={() => setActiveFileName(f.name)}
+              style={{ cursor: 'pointer' }}
             >
-              <FileCode2 size={14} className={file.name.endsWith('.md') ? 'md-file' : ''} />
-              {file.name}
-            </button>
+              <FileCode2
+                size={16}
+                color={f.name.endsWith('.py') ? '#eab308' : f.name.endsWith('.md') ? '#10b981' : '#64748b'}
+              />
+              <span>{f.name}</span>
+              {!isReadOnly && files.length > 1 && (
+                <button
+                  className="file-del-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteFile(f.name);
+                  }}
+                  title={`Delete ${f.name}`}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
           ))}
 
-          <button className="new-file-link" onClick={onAddFile}>
-            <Plus size={14} /> New file
-          </button>
+          {!isReadOnly && (
+            <button className="new-file-link" onClick={onAddFile}>
+              <Plus size={15} /> Add new file
+            </button>
+          )}
 
-          <div className="files-spacer" />
           <div className="sync-note">
-            <span className="sync-icon"><Link2 size={14} /></span>
-            <span>
-              <b>Sandbox Sync</b>
-              <small>Real-time collaborative</small>
-            </span>
+            <div className="sync-icon">
+              <Lock size={16} />
+            </div>
+            <div>
+              <b>{sharedWith.length === 0 ? 'Private Environment' : 'Collaborative Sandbox'}</b>
+              <small>MongoDB Persisted · Yjs Live</small>
+            </div>
           </div>
         </aside>
 
-        {/* Editor & Terminal Column */}
+        {/* Center Panel: Monaco Editor & Output Console */}
         <section className="editor-column">
-          <div className="editor-tab">
-            <span className="python-icon">Py</span>
-            {activeFileName}
-            <span className="unsaved-dot" />
+          {/* Active Instructor Control Banner */}
+          {activeController && (
+            <div className="take-control-banner">
+              <span>
+                👨‍🏫 <b>Instructor Assistance:</b> {activeController} is currently editing this workspace.
+              </span>
+              {isInstructor && (
+                <button
+                  className="danger-btn"
+                  style={{ height: '28px', padding: '0 8px', fontSize: '12px' }}
+                  onClick={onTakeControl}
+                >
+                  Release
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Editor Header Bar with Live Collaborators */}
+          <div className="editor-tab" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span className="python-icon">{currentFile?.language === 'python' ? 'Py' : 'Doc'}</span>
+              <b>{activeFileName}</b>
+            </div>
+
+            {/* Collaborator Presence Bar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {/* Local User Badge */}
+              <span
+                className="collaborator-cursor-tag"
+                style={{ borderColor: getUserColor(userId) }}
+                title={`${name} (You)`}
+              >
+                <span
+                  style={{
+                    width: '7px',
+                    height: '7px',
+                    borderRadius: '50%',
+                    background: getUserColor(userId),
+                    display: 'inline-block',
+                  }}
+                />
+                You {isOwner ? '(Owner)' : ''}
+              </span>
+
+              {/* Remote Peer Badges currently editing this file */}
+              {fileCollabs.map((c: any, idx: number) => (
+                <span
+                  key={idx}
+                  className="collaborator-cursor-tag"
+                  style={{ borderColor: c.color }}
+                  title={`${c.name} (Live editing ${activeFileName})`}
+                >
+                  <span
+                    style={{
+                      width: '7px',
+                      height: '7px',
+                      borderRadius: '50%',
+                      background: c.color,
+                      display: 'inline-block',
+                    }}
+                  />
+                  {c.name}
+                </span>
+              ))}
+            </div>
           </div>
 
           <div className="editor-wrap">
@@ -1933,496 +2899,1447 @@ function WorkspaceView({
               language={currentFile?.language || 'python'}
               theme="vs-dark"
               value={code}
-              onChange={onCodeChange}
+              onMount={(editor) => {
+                editorRef.current = editor;
+                attachYjs(editor);
+              }}
               options={{
-                fontSize: 13,
+                fontSize: 14,
                 fontFamily: '"Cascadia Code", "Fira Code", monospace',
                 minimap: { enabled: false },
                 readOnly: isReadOnly,
                 scrollBeyondLastLine: false,
                 automaticLayout: true,
+                padding: { top: 12 },
               }}
             />
           </div>
 
-          {/* Terminal output */}
+          {/* Integrated Output Console */}
           <div className="terminal">
             <div className="terminal-head">
               <span>OUTPUT CONSOLE</span>
-              <button onClick={() => runCode()} disabled={running} style={{ color: '#687bd6', cursor: 'pointer' }}>
-                {running ? 'Executing…' : '▶ Execute'}
+              <button
+                onClick={handleExecute}
+                disabled={running}
+                style={{ color: '#818cf8', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                <Play size={12} fill="currentColor" /> {running ? 'Executing...' : '▶ Execute'}
               </button>
             </div>
-            <div className="terminal-body" style={{ overflowY: 'auto' }}>
-              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#c9cdd6' }}>{output}</pre>
+            <div className="terminal-body">
+              <pre>{output}</pre>
             </div>
           </div>
         </section>
 
-        {/* Right Info Panel */}
-        <aside className="workspace-right">
-          <div className="right-panel-header">
-            <b>WORKSPACE ASSISTANT</b>
+        {/* Right Panel: Collaboration & Access Info / Workspace Chat */}
+        <aside className="workspace-right" style={{ display: 'flex', flexDirection: 'column' }}>
+          <div
+            className="right-panel-header"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '8px 12px',
+              borderBottom: '1px solid #e2e8f0',
+              background: '#f8fafc',
+            }}
+          >
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                className={`filter-pill ${workspaceRightTab === 'access' ? 'active' : ''}`}
+                onClick={() => setWorkspaceRightTab('access')}
+                style={{ fontSize: '11.5px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <Users size={13} /> Collaborators ({collaborators.length || 1})
+              </button>
+              <button
+                className={`filter-pill ${workspaceRightTab === 'chat' ? 'active' : ''}`}
+                onClick={() => {
+                  setWorkspaceRightTab('chat');
+                  setWorkspaceUnreadCount(0);
+                }}
+                style={{ fontSize: '11.5px', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '5px' }}
+              >
+                <MessageSquare size={13} /> Chat
+                {workspaceUnreadCount > 0 && (
+                  <span
+                    style={{
+                      background: '#ef4444',
+                      color: '#ffffff',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      padding: '1px 6px',
+                      borderRadius: '10px',
+                    }}
+                  >
+                    {workspaceUnreadCount}
+                  </span>
+                )}
+              </button>
+            </div>
           </div>
 
-          <div className="workspace-side-section">
-            <div className="hint-title">
-              <span><Sparkles size={14} /></span>
-              <b>Learning Tip</b>
-            </div>
-            <p style={{ fontSize: '8px', color: '#778496', margin: '8px 0', lineHeight: 1.5 }}>
-              Try running <code>binary_search(values, 16)</code> and tracing the middle pointer values in each step.
-            </p>
-          </div>
+          {workspaceRightTab === 'access' ? (
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+              {/* Presence Roster */}
+              <div className="workspace-side-section">
+                <div className="side-section-head">
+                  <b>ONLINE COLLABORATORS ({collaborators.length || 1})</b>
+                </div>
+                <div className="collaborators-roster">
+                  {collaborators.length === 0 ? (
+                    <div className="collab-person-row">
+                      <span className="avatar avatar-blue">ME</span>
+                      <div className="collab-person-info">
+                        <b>You</b>
+                        <small>{isOwner ? '👑 Owner' : role}</small>
+                      </div>
+                    </div>
+                  ) : (
+                    collaborators.map((c: any, i: number) => (
+                      <div className="collab-person-row" key={i}>
+                        <span
+                          className="avatar"
+                          style={{
+                            backgroundColor: getUserColor(c.userId),
+                            color: '#ffffff',
+                            fontWeight: 700,
+                          }}
+                        >
+                          {(c.name || 'User').split(' ').map((s: string) => s[0]).slice(0, 2).join('')}
+                        </span>
+                        <div className="collab-person-info">
+                          <b>{c.name} {c.userId === userId ? '(You)' : ''}</b>
+                          <small>
+                            {c.userId === ownerId
+                              ? '👑 Workspace Owner'
+                              : c.role === 'teacher'
+                              ? '👨‍🏫 Instructor'
+                              : 'Student Collaborator'}
+                          </small>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
 
-          <div className="workspace-side-section">
-            <div className="side-section-head">
-              <b>COLLABORATORS</b>
+              {/* Permission Details */}
+              <div className="workspace-side-section">
+                <div className="side-section-head">
+                  <b>ACCESS MODEL</b>
+                </div>
+                <div className="access-info-card">
+                  <b>{sharedWith.length === 0 ? '🔒 Private Workspace' : '👥 Shared Workspace'}</b>
+                  <p style={{ margin: '4px 0 10px', fontSize: '13px', color: '#64748b' }}>
+                    {sharedWith.length === 0
+                      ? `Only ${ownerName} and classroom instructors have access.`
+                      : `Accessible by ${ownerName} and explicitly invited collaborators.`}
+                  </p>
+                  {sharedWith.length > 0 && (
+                    <div style={{ marginTop: '8px', borderTop: '1px solid #e2e8f0', paddingTop: '8px' }}>
+                      <small style={{ fontWeight: 700, color: '#475569' }}>Explicitly shared with:</small>
+                      {sharedWith.map((s: any) => (
+                        <div
+                          key={s.userId}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            marginTop: '4px',
+                            fontSize: '12px',
+                          }}
+                        >
+                          <span>{s.name}</span>
+                          <span className={`badge-privacy ${s.permission === 'editor' ? 'editor' : 'viewer'}`}>
+                            {s.permission}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {(isInstructor || isOwner) && (
+                  <button className="secondary-btn" style={{ width: '100%' }} onClick={onManageAccess}>
+                    <Share2 size={15} /> Invite Collaborators
+                  </button>
+                )}
+              </div>
+
+              {/* AI Helper Shortcut */}
+              <div className="workspace-side-section" style={{ marginTop: 'auto' }}>
+                <button
+                  className="primary-btn"
+                  style={{ width: '100%', background: '#312e81' }}
+                  onClick={() => setAiOpen(true)}
+                >
+                  <Sparkles size={16} /> Ask AI Assistant
+                </button>
+              </div>
             </div>
-            {Object.entries(permissions).map(([uid, perm]) => (
-              <PersonRow
-                key={uid}
-                name={uid}
-                detail={`Role: ${perm}`}
-                initials={uid.slice(0, 2).toUpperCase()}
-                color={perm === 'owner' ? 'blue' : 'green'}
-                status={perm as string}
+          ) : (
+            <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <ChatPanel
+                context="workspace"
+                contextId={currentWorkspaceId}
+                currentUserId={userId}
+                currentUserName={name}
+                currentUserRole={role}
+                onlineCount={collaborators.length || 1}
+                canSend={isOwner || isInstructor || myPermission === 'editor'}
+                placeholder="Message collaborators in this workspace..."
+                height="100%"
               />
-            ))}
-          </div>
+            </div>
+          )}
         </aside>
       </div>
     </div>
   );
 }
 
-function ResourcesView({ resources, role, setModal }: any) {
-  return (
-    <div className="page-content generic-page">
-      <div className="generic-head">
-        <div>
-          <div className="date-label">CLASSROOM MATERIALS</div>
-          <h1>Learning Resources<span className="heading-period">.</span></h1>
-          <p>Lecture slides, algorithms cheat sheets, and problem sets.</p>
-        </div>
-        {role === 'Teacher' && (
-          <button className="primary-btn" onClick={() => setModal('new-resource')}>
-            <Plus size={16} /> Add Resource
-          </button>
-        )}
-      </div>
+// -------------------------------------------------------------
+// WORKSPACE ACCESS & PERMISSIONS MODAL
+// -------------------------------------------------------------
+function WorkspaceAccessModal({ workspace, students, onClose, onGrantAccess, onRevokeAccess }: any) {
+  const [selectedStudentId, setSelectedStudentId] = useState('');
+  const [selectedPermission, setSelectedPermission] = useState<'viewer' | 'editor'>('editor');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
-      <div className="resource-list">
-        {resources.length === 0 ? (
-          <div style={{ padding: '30px', textAlign: 'center', color: '#8893a4' }}>No resources posted yet.</div>
-        ) : (
-          resources.map((r: any) => (
-            <div className="resource-row" key={r.id}>
-              <div className="resource-file-icon link"><Link2 size={16} /></div>
-              <div className="resource-copy">
-                <b>{r.title}</b>
-                <small>{r.description || r.url}</small>
+  const sharedUsers: SharedUser[] = workspace?.sharedWith || [];
+  const ownerName = workspace?.owner_name || 'Student';
+  const ownerId = workspace?.owner_id;
+
+  // Search classmates dynamically
+  useEffect(() => {
+    let active = true;
+    if (searchQuery.trim().length > 0) {
+      setIsSearching(true);
+      searchClassmateUsers(searchQuery)
+        .then((res) => {
+          if (active) {
+            // filter out owner and already shared
+            const filtered = res.filter(
+              (u: any) => u.userId !== ownerId && !sharedUsers.some((su) => su.userId === u.userId)
+            );
+            setSearchResults(filtered);
+            setIsSearching(false);
+          }
+        })
+        .catch(() => {
+          if (active) setIsSearching(false);
+        });
+    } else {
+      // Fallback to local students list
+      const fallback = (students || []).filter(
+        (s: any) => s.userId !== ownerId && !sharedUsers.some((u) => u.userId === s.userId)
+      );
+      setSearchResults(fallback);
+    }
+    return () => {
+      active = false;
+    };
+  }, [searchQuery, students, ownerId, sharedUsers]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedStudentId) return;
+    onGrantAccess(selectedStudentId, selectedPermission);
+    setSelectedStudentId('');
+    setSearchQuery('');
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <h2>Share Workspace: {ownerName}</h2>
+            <p>Collaborate with classmates in real time on the same project and files.</p>
+          </div>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="access-info-card" style={{ marginBottom: '20px' }}>
+          <b>🔒 Privacy & Ownership</b>
+          <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#64748b' }}>
+            This workspace belongs to <b>{ownerName}</b>. Invited classmates with Editor access can write and edit code together with conflict-free synchronization.
+          </p>
+        </div>
+
+        <div className="side-section-head" style={{ marginBottom: '10px' }}>
+          <b>CURRENT WORKSPACE MEMBERS ({sharedUsers.length + 1})</b>
+        </div>
+
+        <div className="permission-list-wrap">
+          {/* Workspace Owner */}
+          <div className="perm-user-row">
+            <span className="avatar avatar-blue">{ownerName.slice(0, 2).toUpperCase()}</span>
+            <div style={{ flex: 1 }}>
+              <b>{ownerName}</b>
+              <small>Workspace Owner · Personal Sandbox</small>
+            </div>
+            <span className="badge-privacy private">Owner</span>
+          </div>
+
+          {/* Shared Classmates */}
+          {sharedUsers.map((u) => (
+            <div className="perm-user-row" key={u.userId}>
+              <span className="avatar avatar-green">{u.name.slice(0, 2).toUpperCase()}</span>
+              <div style={{ flex: 1 }}>
+                <b>{u.name}</b>
+                <small>{u.email || 'Classmate'}</small>
               </div>
-              <a
-                href={r.url}
-                target="_blank"
-                rel="noreferrer"
-                className="secondary-btn resource-download"
-                style={{ textDecoration: 'none' }}
+              <span className={`badge-privacy ${u.permission === 'editor' ? 'editor' : 'viewer'}`}>
+                {u.permission === 'editor' ? '✏ Editor' : '👁 Viewer'}
+              </span>
+              <button
+                className="danger-btn"
+                style={{ height: '32px', padding: '0 10px', fontSize: '12px' }}
+                onClick={() => onRevokeAccess(u.userId)}
               >
-                Open Link <ArrowRight size={12} />
-              </a>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function AssignmentsView({ assignments, role, setModal, setToast }: any) {
-  return (
-    <div className="page-content generic-page">
-      <div className="generic-head">
-        <div>
-          <div className="date-label">TASKS & LABS</div>
-          <h1>Assignments<span className="heading-period">.</span></h1>
-          <p>Practical coding problems and algorithms challenges.</p>
-        </div>
-        {role === 'Teacher' && (
-          <button className="primary-btn" onClick={() => setModal('new-assignment')}>
-            <Plus size={16} /> Create Assignment
-          </button>
-        )}
-      </div>
-
-      <div className="assignment-grid">
-        {assignments.map((a: any) => (
-          <article className="assignment-card" key={a.id}>
-            <div className="assignment-topline">
-              <span className="card-overline">PROGRAMMING LAB</span>
-              <span className="assignment-status complete">Assigned</span>
-            </div>
-            <h3>{a.title}</h3>
-            <p>{a.description}</p>
-            <div className="assignment-bottom">
-              <span className="assignment-due"><Clock3 size={13} /> Due in 3 days</span>
-              <button className="primary-btn" style={{ height: '28px', fontSize: '8px' }} onClick={() => setToast('Open your personal workspace to complete this lab.')}>
-                Start in Workspace <ArrowRight size={12} />
+                Remove
               </button>
             </div>
-          </article>
-        ))}
+          ))}
+        </div>
+
+        {/* Invite Form */}
+        <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '20px', marginTop: '16px' }}>
+          <div className="side-section-head" style={{ marginBottom: '12px' }}>
+            <b>INVITE A CLASSMATE</b>
+          </div>
+
+          <form onSubmit={handleSubmit} className="modal-form">
+            <label>
+              Search Students {isSearching && <small style={{ color: '#6366f1' }}>(Searching...)</small>}
+              <input
+                type="text"
+                placeholder="Type name or email..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                style={{ marginBottom: '8px' }}
+              />
+            </label>
+
+            <label>
+              Select Student ({searchResults.length} found)
+              <select
+                value={selectedStudentId}
+                onChange={(e) => setSelectedStudentId(e.target.value)}
+                required
+              >
+                <option value="">-- Select student to invite --</option>
+                {searchResults.map((s: any) => (
+                  <option key={s.userId} value={s.userId}>
+                    {s.name} ({s.email || 'Student'})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Permission
+              <div style={{ display: 'flex', gap: '20px', marginTop: '6px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px' }}>
+                  <input
+                    type="radio"
+                    name="perm"
+                    value="editor"
+                    checked={selectedPermission === 'editor'}
+                    onChange={() => setSelectedPermission('editor')}
+                    style={{ height: 'auto' }}
+                  />
+                  <span><b>Editor:</b> Can edit files together in real time</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', fontSize: '14px' }}>
+                  <input
+                    type="radio"
+                    name="perm"
+                    value="viewer"
+                    checked={selectedPermission === 'viewer'}
+                    onChange={() => setSelectedPermission('viewer')}
+                    style={{ height: 'auto' }}
+                  />
+                  <span><b>Viewer:</b> Read-only access</span>
+                </label>
+              </div>
+            </label>
+
+            <button
+              className="primary-btn full-btn"
+              type="submit"
+              disabled={!selectedStudentId}
+              style={{ marginTop: '12px' }}
+            >
+              <UserPlus size={16} /> Share Workspace
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
 }
 
-function AssessmentsView({ assessments, submissions, role, onStartQuiz, onToggleStatus, setModal }: any) {
+// -------------------------------------------------------------
+// LIVE CLASSROOM VIEW
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// LIVE CLASSROOM VIEW (WEBRTC SCREEN SHARE + MONGODB CHAT)
+// -------------------------------------------------------------
+// -------------------------------------------------------------
+// REAL-TIME VIDEO CLASSROOM (GOOGLE MEET + INTERACTIVE WORKSPACE)
+// -------------------------------------------------------------
+
+function AudioPlayer({ stream }: { stream: MediaStream }) {
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (audioRef.current && stream) {
+      audioRef.current.srcObject = stream;
+      audioRef.current.play().catch((err) => {
+        console.warn('[AudioPlayer] Remote audio play error:', err);
+      });
+    }
+  }, [stream]);
+
+  return <audio ref={audioRef} autoPlay playsInline />;
+}
+
+function VideoTile({
+  stream,
+  name,
+  role,
+  isSelf,
+  isMicOn,
+  isCamOn,
+  isSpeaking,
+}: {
+  stream: MediaStream | null;
+  name: string;
+  role: string;
+  isSelf?: boolean;
+  isMicOn: boolean;
+  isCamOn: boolean;
+  isSpeaking?: boolean;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      if (stream && isCamOn && stream.getVideoTracks().length > 0) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play().catch(() => {});
+      } else {
+        videoRef.current.srcObject = null;
+      }
+    }
+  }, [stream, isCamOn]);
+
+  const initials = (name || 'User')
+    .split(' ')
+    .map((s) => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+
+  const isTeacher = role?.toLowerCase() === 'teacher' || role?.toLowerCase() === 'instructor';
+
   return (
-    <div className="page-content generic-page">
-      <div className="generic-head">
-        <div>
-          <div className="date-label">EVALUATION & QUIZZES</div>
-          <h1>Classroom Assessments<span className="heading-period">.</span></h1>
-          <p>Instant grading, concept checks, and performance tracking.</p>
+    <div className={`video-tile ${isSelf ? 'self' : ''} ${isSpeaking ? 'speaking' : ''}`}>
+      {isCamOn && stream && stream.getVideoTracks().length > 0 ? (
+        <video ref={videoRef} autoPlay playsInline muted={isSelf} />
+      ) : (
+        <div className="camera-off-avatar">
+          <div className={`camera-off-circle ${isTeacher ? 'blue' : 'green'}`}>{initials}</div>
+          <span style={{ fontSize: '12.5px', fontWeight: 600 }}>Camera Off</span>
         </div>
-        {role === 'Teacher' && (
-          <button className="primary-btn" onClick={() => setModal('new-assessment')}>
-            <Plus size={16} /> New Assessment
-          </button>
-        )}
+      )}
+
+      {/* Play remote participant audio */}
+      {!isSelf && stream && stream.getAudioTracks().length > 0 && (
+        <AudioPlayer stream={stream} />
+      )}
+
+      <div className="video-tile-overlay">
+        <div className="participant-name-tag">
+          <span>{name} {isSelf ? '(You)' : ''}</span>
+          <span className={`role-tag ${isTeacher ? 'instructor' : 'student'}`}>
+            {isTeacher ? 'Instructor' : 'Student'}
+          </span>
+        </div>
+
+        <div className="tile-media-status">
+          <div className={`tile-media-badge ${!isMicOn ? 'muted' : ''}`} title={isMicOn ? 'Microphone Live' : 'Muted'}>
+            {isMicOn ? <Mic size={13} /> : <MicOff size={13} />}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      {assessments.map((as: any) => (
-        <div className="assessment-highlight" key={as.id}>
-          <div className="assessment-feature">
-            <div>
-              <span className="highlight-badge"><GraduationCap size={13} /> {as.status.toUpperCase()}</span>
-              <h2>{as.title}</h2>
-              <p>{as.description || 'Test algorithmic understanding and time complexity.'}</p>
-              <div className="assessment-facts">
-                <span><Clock3 size={14} /> {as.duration_minutes} minutes</span>
-                <span><Check size={14} /> 6 questions</span>
-                <span><ShieldCheck size={14} /> Automated evaluation</span>
-              </div>
-              <div>
-                <button className="primary-btn" onClick={() => onStartQuiz(as)}>
-                  Take Assessment Now <ArrowRight size={15} />
-                </button>
-                {role === 'Teacher' && (
-                  <button
-                    className="secondary-btn"
-                    style={{ marginLeft: 8 }}
-                    onClick={() => onToggleStatus(as.id, as.status === 'active' ? 'ended' : 'active')}
-                  >
-                    {as.status === 'active' ? 'End Assessment' : 'Activate Quiz'}
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
+function ScreenShareTile({
+  stream,
+  teacherName,
+}: {
+  stream: MediaStream | null;
+  teacherName: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [stream]);
+
+  return (
+    <div className="screenshare-screen-main">
+      <video ref={videoRef} autoPlay playsInline />
+      <div style={{ position: 'absolute', top: 12, left: 16, zIndex: 10 }}>
+        <div className="live-indicator-pill">
+          <span className="pulse-dot" />
+          <span>🔴 LIVE SCREEN BROADCAST · {teacherName || 'Instructor'}</span>
         </div>
-      ))}
+      </div>
+    </div>
+  );
+}
 
-      {/* Real-time Submissions Table for Teachers */}
-      {role === 'Teacher' && (
-        <div className="results-panel">
-          <div className="panel-heading" style={{ padding: '16px 16px 0' }}>
-            <div>
-              <h3>Student Submissions & Real-Time Scores</h3>
-              <p>{submissions.length} completed submissions</p>
-            </div>
-          </div>
+function PrejoinPreviewTile({
+  stream,
+  isCamOn,
+  name,
+  role,
+}: {
+  stream: MediaStream | null;
+  isCamOn: boolean;
+  name: string;
+  role: string;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
-          <div className="result-head">
-            <span>STUDENT</span>
-            <span>SUBMITTED AT</span>
-            <span>STATUS</span>
-            <span>SCORE</span>
-            <span></span>
-          </div>
+  useEffect(() => {
+    if (videoRef.current && stream && isCamOn && stream.getVideoTracks().length > 0) {
+      videoRef.current.srcObject = stream;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [stream, isCamOn]);
 
-          {submissions.length === 0 ? (
-            <div style={{ padding: 20, textAlign: 'center', color: '#8892a0', fontSize: '9px' }}>
-              No submissions recorded yet. Students can submit using the "Take Assessment Now" button.
-            </div>
-          ) : (
-            submissions.map((sub: any) => (
-              <div className="result-row" key={sub.id}>
-                <div className="result-student">
-                  <span className="avatar avatar-green">{sub.student_name.slice(0, 2).toUpperCase()}</span>
-                  <span>
-                    <b>{sub.student_name}</b>
-                    <small>{sub.student_id}</small>
-                  </span>
-                </div>
-                <span>{new Date(sub.submitted_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                <span className="badge-permission editor">Graded</span>
-                <b className="result-score">{sub.score} / {sub.total_points || 6} ({Math.round((sub.score / (sub.total_points || 6)) * 100)}%)</b>
-                <Check size={14} color="#40c057" />
-              </div>
-            ))
-          )}
+  const initials = (name || 'User')
+    .split(' ')
+    .map((s) => s[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase();
+  const isTeacher = role?.toLowerCase() === 'teacher' || role?.toLowerCase() === 'instructor';
+
+  return (
+    <div className="prejoin-preview-tile">
+      {isCamOn && stream && stream.getVideoTracks().length > 0 ? (
+        <video ref={videoRef} autoPlay playsInline muted className="prejoin-video" />
+      ) : (
+        <div className="camera-off-avatar">
+          <div className={`camera-off-circle ${isTeacher ? 'blue' : 'green'}`}>{initials}</div>
+          <span style={{ fontSize: '13px', fontWeight: 600 }}>Camera is off</span>
         </div>
       )}
     </div>
   );
 }
 
-function AnalyticsView({ activeCount, submissions }: any) {
-  const avgScore = submissions.length > 0
-    ? Math.round((submissions.reduce((a: number, s: any) => a + Number(s.score || 0), 0) / (submissions.length * 6)) * 100)
-    : 85;
+function ClassroomView({
+  classroom,
+  role,
+  userId,
+  name,
+  live,
+  setLive,
+  chat,
+  chatDraft: _chatDraft,
+  setChatDraft: _setChatDraft,
+  onSendMessage: _onSendMessage,
+  participants: rosterParticipants,
+  setPage,
+  setToast,
+}: any) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const isTeacher = role === 'Teacher';
+
+  // Local call states
+  const [inCall, setInCall] = useState(false);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [isMicOn, setIsMicOn] = useState(true);
+  const [isCamOn, setIsCamOn] = useState(true);
+  const [isSharingScreen, setIsSharingScreen] = useState(false);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
+
+  // Pre-join preview states
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const [prejoinCam, setPrejoinCam] = useState(true);
+  const [prejoinMic, setPrejoinMic] = useState(true);
+
+  // Call participants and streams
+  const [callParticipants, setCallParticipants] = useState<ParticipantMediaState[]>([]);
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, { userMedia: MediaStream; screen: MediaStream | null }>>(new Map());
+  const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
+
+  // Screen sharing states
+  const [remoteScreenActive, setRemoteScreenActive] = useState(false);
+  const [remoteTeacherName, setRemoteTeacherName] = useState<string>('Instructor');
+  const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
+
+  // UI Drawer & Audio states
+  const [activeDrawerTab, setActiveDrawerTab] = useState<'chat' | 'participants' | null>('chat');
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (activeDrawerTab === 'chat') {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chat, activeDrawerTab]);
+
+  // Pre-join camera preview
+  useEffect(() => {
+    let active = true;
+    if (!inCall) {
+      navigator.mediaDevices
+        ?.getUserMedia({
+          video: prejoinCam ? { width: { ideal: 640 }, height: { ideal: 360 } } : false,
+          audio: prejoinMic,
+        })
+        .then((s) => {
+          if (active) setPreviewStream(s);
+        })
+        .catch(() => {
+          if (active) setPreviewStream(null);
+        });
+    }
+
+    return () => {
+      active = false;
+      if (previewStream) {
+        previewStream.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, [inCall, prejoinCam, prejoinMic]);
+
+  // Fullscreen change listener
+  useEffect(() => {
+    const handleFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener('fullscreenchange', handleFsChange);
+    return () => document.removeEventListener('fullscreenchange', handleFsChange);
+  }, []);
+
+  // Handle Joining Call
+  const handleJoinCall = async () => {
+    // Stop pre-join preview tracks
+    if (previewStream) {
+      previewStream.getTracks().forEach((t) => t.stop());
+      setPreviewStream(null);
+    }
+
+    try {
+      const media = await videoClassroomManager.initLocalMedia(prejoinCam, prejoinMic);
+      setLocalStream(media);
+      setIsCamOn(prejoinCam);
+      setIsMicOn(prejoinMic);
+      setInCall(true);
+
+      if (isTeacher && !live) {
+        setLive();
+      }
+
+      videoClassroomManager.joinClassroomCall(
+        classroom.id,
+        {
+          userId,
+          name,
+          role: isTeacher ? 'teacher' : 'student',
+          micEnabled: prejoinMic,
+          camEnabled: prejoinCam,
+        },
+        {
+          onParticipantsUpdate: (parts) => {
+            setCallParticipants(parts);
+          },
+          onRemoteStreamsUpdate: (streams) => {
+            setRemoteStreams(new Map(streams));
+          },
+          onScreenShareChange: (isSharing, teacherName, stream) => {
+            setRemoteScreenActive(isSharing);
+            if (teacherName) setRemoteTeacherName(teacherName);
+            if (stream) setRemoteScreenStream(stream);
+            if (!isSharing) setRemoteScreenStream(null);
+          },
+          onClassEnded: (msg) => {
+            setInCall(false);
+            setLocalStream(null);
+            setLocalScreenStream(null);
+            setIsSharingScreen(false);
+            setRemoteScreenActive(false);
+            setRemoteScreenStream(null);
+            setToast?.(msg || 'The instructor has ended the live class.');
+          },
+          onSpeakingChange: (sId, isSpeaking) => {
+            if (isSpeaking) {
+              setActiveSpeaker(sId);
+            } else if (activeSpeaker === sId) {
+              setActiveSpeaker(null);
+            }
+          },
+        }
+      );
+    } catch (err: any) {
+      console.error('Failed to join call:', err);
+      setToast?.('Could not access media devices: ' + (err?.message || 'Error'));
+    }
+  };
+
+  // Toggle Microphone
+  const handleToggleMic = () => {
+    const next = videoClassroomManager.toggleMicrophone();
+    setIsMicOn(next);
+  };
+
+  // Toggle Camera
+  const handleToggleCam = async () => {
+    const next = await videoClassroomManager.toggleCamera();
+    setIsCamOn(next);
+  };
+
+  // Teacher: Start / Stop Screen Share
+  const handleToggleScreenShare = async () => {
+    if (!isTeacher) return;
+
+    if (isSharingScreen) {
+      videoClassroomManager.stopScreenShare();
+      setIsSharingScreen(false);
+      setLocalScreenStream(null);
+    } else {
+      try {
+        const stream = await videoClassroomManager.startScreenShare(name);
+        setLocalScreenStream(stream);
+        setIsSharingScreen(true);
+      } catch (err: any) {
+        if (err.name !== 'NotAllowedError') {
+          setToast?.('Screen sharing could not be started.');
+        }
+      }
+    }
+  };
+
+  // Toggle Fullscreen
+  const handleToggleFullscreen = () => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  };
+
+  // Leave Call (Student)
+  const handleLeaveCall = () => {
+    videoClassroomManager.leaveCall();
+    setInCall(false);
+    setLocalStream(null);
+    setLocalScreenStream(null);
+    setIsSharingScreen(false);
+    setRemoteScreenActive(false);
+    setRemoteScreenStream(null);
+  };
+
+  // End Class (Teacher)
+  const handleEndClass = () => {
+    videoClassroomManager.endClass();
+    setInCall(false);
+    setLocalStream(null);
+    setLocalScreenStream(null);
+    setIsSharingScreen(false);
+    setRemoteScreenActive(false);
+    setRemoteScreenStream(null);
+    if (live) {
+      setLive();
+    }
+  };
+
+  // Unblock Audio on Click
+  const handleUnblockAudio = () => {
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (AudioCtx) {
+      const ctx = new AudioCtx();
+      ctx.resume().then(() => {
+        setAudioBlocked(false);
+      });
+    } else {
+      setAudioBlocked(false);
+    }
+  };
+
+  // Determine active screen sharing stream
+  const activeScreenStream = isSharingScreen ? localScreenStream : remoteScreenStream;
+  const showScreenShareLayout = Boolean(isSharingScreen || (remoteScreenActive && activeScreenStream));
+
+  // Compute total participant count in call
+  const totalCallCount = 1 + callParticipants.length;
+  const gridClass = `count-${Math.min(totalCallCount, 6)}`;
 
   return (
-    <div className="page-content generic-page">
-      <div className="generic-head">
+    <div className="page-content">
+      {/* Title Header */}
+      <div className="classroom-title-row">
         <div>
-          <div className="date-label">PERFORMANCE METRICS</div>
-          <h1>Classroom Analytics<span className="heading-period">.</span></h1>
-          <p>Real-time student progress, submission metrics, and concept breakdowns.</p>
+          <div className="date-label">INTERACTIVE LIVE CLASSROOM</div>
+          <h1>{classroom.name}<span className="heading-period">.</span></h1>
+          <p>{classroom.description || 'Interactive Google Meet video classroom, real-time WebRTC screen broadcast, and MongoDB chat.'}</p>
+        </div>
+
+        <div className="welcome-actions">
+          {isTeacher && (
+            <button className={live ? 'danger-btn' : 'primary-btn'} onClick={setLive}>
+              <Radio size={16} /> {live ? 'End Live Session' : 'Start Live Session'}
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="stats-grid">
-        <StatCard label="ACTIVE LEARNERS" value={String(activeCount)} icon={<Users size={17} />} meta="In live room" color="green" trend="Online" />
-        <StatCard label="ASSESSMENT AVG" value={`${avgScore}%`} icon={<GraduationCap size={17} />} meta="Across quizzes" color="purple" trend="↑ +4%" />
-        <StatCard label="SUBMISSION COUNT" value={String(submissions.length)} icon={<Check size={17} />} meta="Evaluated submissions" color="blue" trend="Live" />
-        <StatCard label="LAB COMPLETION" value="91%" icon={<Activity size={17} />} meta="Weekly code exercises" color="amber" trend="On Track" />
-      </div>
+      {/* Main Video Classroom Container */}
+      <div className="video-classroom-container" ref={containerRef}>
+        {/* Audio Blocked Autoplay Alert Banner */}
+        {audioBlocked && (
+          <div className="audio-unblock-banner" onClick={handleUnblockAudio}>
+            <VolumeX size={18} color="#f87171" />
+            <span>Click to enable classroom audio playback</span>
+            <Volume2 size={16} color="#10b981" />
+          </div>
+        )}
 
-      <div className="analytics-grid">
-        <div className="panel chart-panel">
-          <div className="panel-heading">
-            <div>
-              <h3>Daily Activity & Participation</h3>
-              <p>Active code executions and submissions</p>
+        {/* 1. Pre-join Lobby View */}
+        {!inCall ? (
+          <div className="prejoin-lobby">
+            <div className="prejoin-card">
+              <h2 style={{ margin: '0 0 6px', color: '#ffffff', fontSize: '22px' }}>
+                {isTeacher ? 'Start Live Class' : live ? 'Live Class in Progress' : 'Classroom Standby'}
+              </h2>
+              <p style={{ margin: '0 0 20px', color: '#94a3b8', fontSize: '13.5px', textAlign: 'center' }}>
+                {isTeacher
+                  ? 'Check your camera and microphone preview before starting the class.'
+                  : live
+                  ? 'Your instructor is currently teaching. Join the live video session below.'
+                  : 'The instructor has not started a live class yet. You can open your private workspace to continue coding.'}
+              </p>
+
+              {/* Prejoin Camera Preview */}
+              <PrejoinPreviewTile
+                stream={previewStream}
+                isCamOn={prejoinCam}
+                name={name}
+                role={role}
+              />
+
+              {/* Device Toggle Buttons */}
+              <div className="prejoin-controls">
+                <button
+                  className={`prejoin-toggle-btn ${!prejoinMic ? 'off' : ''}`}
+                  onClick={() => setPrejoinMic(!prejoinMic)}
+                >
+                  {prejoinMic ? <Mic size={16} /> : <MicOff size={16} />}
+                  <span>{prejoinMic ? 'Mic On' : 'Mic Off'}</span>
+                </button>
+
+                <button
+                  className={`prejoin-toggle-btn ${!prejoinCam ? 'off' : ''}`}
+                  onClick={() => setPrejoinCam(!prejoinCam)}
+                >
+                  {prejoinCam ? <Video size={16} /> : <VideoOff size={16} />}
+                  <span>{prejoinCam ? 'Camera On' : 'Camera Off'}</span>
+                </button>
+              </div>
+
+              {/* Primary Join Button */}
+              {isTeacher || live ? (
+                <button
+                  className="primary-btn"
+                  style={{ width: '100%', height: '46px', fontSize: '15px', borderRadius: '12px' }}
+                  onClick={handleJoinCall}
+                >
+                  <Video size={18} /> {isTeacher ? 'Start Live Class' : 'Join Live Class'}
+                </button>
+              ) : (
+                <button
+                  className="primary-btn"
+                  style={{ width: '100%', height: '46px', fontSize: '15px', borderRadius: '12px' }}
+                  onClick={() => setPage('Workspace')}
+                >
+                  <Code2 size={18} /> Open My Workspace
+                </button>
+              )}
             </div>
           </div>
-          <div className="bar-chart">
-            <div className="chart-plot">
-              <div className="chart-bars">
-                {[
-                  ['M', 40, 27],
-                  ['T', 60, 42],
-                  ['W', 48, 50],
-                  ['T', 76, 43],
-                  ['F', 64, 36],
-                  ['M', 82, 60],
-                  ['T', 70, 54],
-                  ['W', 93, 68],
-                  ['T', 100, 80],
-                ].map(([d, a, b], i) => (
-                  <div className="chart-day" key={i}>
-                    <div className="bar-pair">
-                      <i style={{ height: `${a}%` }} />
-                      <i style={{ height: `${b}%` }} />
-                    </div>
-                    <small>{d}</small>
-                  </div>
-                ))}
+        ) : (
+          /* 2. In-Call Interactive Stage */
+          <>
+            {/* Top Stage Header */}
+            <div className="classroom-stage-header">
+              <div className="classroom-badge-row">
+                <div className="live-indicator-pill">
+                  <span className="pulse-dot" />
+                  <span>🔴 LIVE CLASS</span>
+                </div>
+                <span style={{ color: '#94a3b8', fontSize: '13px' }}>
+                  {classroom.name} ({classroom.batch})
+                </span>
+              </div>
+
+              <div className="classroom-badge-row">
+                <div className="participant-name-tag" style={{ background: 'rgba(255,255,255,0.06)' }}>
+                  <Users size={14} color="#818cf8" />
+                  <span>{totalCallCount} in call</span>
+                </div>
+
+                <button
+                  className="icon-btn"
+                  style={{ background: 'rgba(255, 255, 255, 0.08)', color: '#ffffff', borderRadius: '8px', width: '34px', height: '34px' }}
+                  onClick={handleToggleFullscreen}
+                  title="Toggle Fullscreen"
+                >
+                  {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                </button>
               </div>
             </div>
-          </div>
-        </div>
 
-        <div className="panel difficulty-panel">
-          <div className="panel-heading">
-            <div>
-              <h3>Key Concepts Breakdown</h3>
-              <p>Understanding rate by topic</p>
+            {/* Video Stage & Side Drawer Shell */}
+            <div className="classroom-main-stage">
+              {/* Screen Share Dominant Layout OR Multi-Peer Video Grid */}
+              {showScreenShareLayout ? (
+                <div className="screenshare-stage-layout">
+                  {/* Dominant Screen Video */}
+                  <ScreenShareTile
+                    stream={activeScreenStream}
+                    teacherName={isSharingScreen ? name : remoteTeacherName}
+                  />
+
+                  {/* Horizontal Thumbnail Strip for Participant Cameras */}
+                  <div className="screenshare-participants-strip">
+                    {/* Self Tile */}
+                    <VideoTile
+                      stream={localStream}
+                      name={name}
+                      role={role}
+                      isSelf={true}
+                      isMicOn={isMicOn}
+                      isCamOn={isCamOn}
+                      isSpeaking={activeSpeaker === 'local'}
+                    />
+
+                    {/* Remote Participants Tiles */}
+                    {callParticipants.map((p) => {
+                      const peerStreams = remoteStreams.get(p.socketId);
+                      return (
+                        <VideoTile
+                          key={p.socketId}
+                          stream={peerStreams ? peerStreams.userMedia : null}
+                          name={p.name}
+                          role={p.role}
+                          isMicOn={p.micEnabled}
+                          isCamOn={p.camEnabled}
+                          isSpeaking={activeSpeaker === p.socketId}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                /* Multi-Peer Video Grid Layout */
+                <div className="video-grid-wrapper">
+                  <div className={`video-grid ${gridClass}`}>
+                    {/* Self Video Tile */}
+                    <VideoTile
+                      stream={localStream}
+                      name={name}
+                      role={role}
+                      isSelf={true}
+                      isMicOn={isMicOn}
+                      isCamOn={isCamOn}
+                      isSpeaking={activeSpeaker === 'local'}
+                    />
+
+                    {/* Remote Participants Tiles */}
+                    {callParticipants.map((p) => {
+                      const peerStreams = remoteStreams.get(p.socketId);
+                      return (
+                        <VideoTile
+                          key={p.socketId}
+                          stream={peerStreams ? peerStreams.userMedia : null}
+                          name={p.name}
+                          role={p.role}
+                          isMicOn={p.micEnabled}
+                          isCamOn={p.camEnabled}
+                          isSpeaking={activeSpeaker === p.socketId}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Right Side Drawer: Chat & Participants */}
+              {activeDrawerTab && (
+                <aside className="classroom-right-drawer">
+                  {/* Drawer Navigation Tabs */}
+                  <div className="drawer-tabs">
+                    <button
+                      className={`drawer-tab ${activeDrawerTab === 'chat' ? 'active' : ''}`}
+                      onClick={() => setActiveDrawerTab('chat')}
+                    >
+                      <MessageSquare size={16} />
+                      <span>Classroom Chat</span>
+                    </button>
+                    <button
+                      className={`drawer-tab ${activeDrawerTab === 'participants' ? 'active' : ''}`}
+                      onClick={() => setActiveDrawerTab('participants')}
+                    >
+                      <Users size={16} />
+                      <span>People ({rosterParticipants.length})</span>
+                    </button>
+                    <button
+                      className="icon-btn"
+                      style={{ padding: '0 12px' }}
+                      onClick={() => setActiveDrawerTab(null)}
+                      title="Close Panel"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+
+                  {/* Drawer Content */}
+                  <div className="drawer-body" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                    {activeDrawerTab === 'chat' ? (
+                      <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+                        <ChatPanel
+                          context="classroom"
+                          contextId={classroom?.id || ''}
+                          currentUserId={userId}
+                          currentUserName={name}
+                          currentUserRole={role}
+                          onlineCount={callParticipants.length || rosterParticipants?.length || 1}
+                          initialMessages={chat}
+                          onSendMessage={async (text, replyTo) => {
+                            const socket = getSocket();
+                            socket.emit('chat:message', {
+                              classroomId: classroom?.id,
+                              text,
+                              name,
+                              replyTo,
+                            });
+                          }}
+                          placeholder="Ask a question or discuss with class..."
+                          height="100%"
+                        />
+                      </div>
+                    ) : (
+                      /* Participants Roster with Mic/Cam status */
+                      <div className="collaborators-roster" style={{ flex: 1, overflowY: 'auto' }}>
+                        {/* Current User Row */}
+                        <div className="collab-person-row">
+                          <span className={`avatar avatar-${isTeacher ? 'blue' : 'green'}`}>
+                            {name.slice(0, 2).toUpperCase()}
+                          </span>
+                          <div className="collab-person-info" style={{ flex: 1 }}>
+                            <b>{name} (You)</b>
+                            <small>{isTeacher ? '👨‍🏫 Instructor (Host)' : 'Student'}</small>
+                          </div>
+                          <div style={{ display: 'flex', gap: '4px' }}>
+                            {isMicOn ? <Mic size={14} color="#10b981" /> : <MicOff size={14} color="#f87171" />}
+                            {isCamOn ? <Video size={14} color="#10b981" /> : <VideoOff size={14} color="#94a3b8" />}
+                          </div>
+                        </div>
+
+                        {/* Other Participants */}
+                        {rosterParticipants
+                          .filter((p: any) => p.userId !== userId)
+                          .map((p: any) => {
+                            const inCallState = callParticipants.find((cp) => cp.socketId === p.socketId || cp.userId === p.userId);
+                            const peerMicOn = inCallState ? inCallState.micEnabled : false;
+                            const peerCamOn = inCallState ? inCallState.camEnabled : false;
+                            const isPeerTeacher = p.role === 'teacher';
+
+                            return (
+                              <div className="collab-person-row" key={p.socketId || p.userId}>
+                                <span className={`avatar avatar-${isPeerTeacher ? 'blue' : 'green'}`}>
+                                  {p.name.slice(0, 2).toUpperCase()}
+                                </span>
+                                <div className="collab-person-info" style={{ flex: 1 }}>
+                                  <b>{p.name}</b>
+                                  <small>{isPeerTeacher ? '👨‍🏫 Instructor' : inCallState ? '🟢 In Video Call' : '🟢 Online'}</small>
+                                </div>
+                                {inCallState && (
+                                  <div style={{ display: 'flex', gap: '4px' }}>
+                                    {peerMicOn ? <Mic size={14} color="#10b981" /> : <MicOff size={14} color="#f87171" />}
+                                    {peerCamOn ? <Video size={14} color="#10b981" /> : <VideoOff size={14} color="#94a3b8" />}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                      </div>
+                    )}
+                  </div>
+                </aside>
+              )}
             </div>
-          </div>
-          <div className="concept-row">
-            <span className="concept-number">01</span>
-            <span><b>Binary Search Bounds</b><small>Loop invariant middle calculation</small></span>
-            <span className="difficulty-bar"><i style={{ width: '85%' }} /></span>
-            <b className="difficulty-percent">85%</b>
-          </div>
-          <div className="concept-row">
-            <span className="concept-number">02</span>
-            <span><b>Time & Space Complexity</b><small>Big-O intuition</small></span>
-            <span className="difficulty-bar"><i style={{ width: '92%' }} /></span>
-            <b className="difficulty-percent">92%</b>
-          </div>
-        </div>
+
+            {/* 3. Bottom Control Dock */}
+            <div className="classroom-controls-dock">
+              {/* Left group: Class Info */}
+              <div className="dock-group">
+                <span style={{ fontSize: '13px', color: '#94a3b8' }}>
+                  Code: <b style={{ color: '#818cf8', letterSpacing: '1px' }}>{classroom.join_code}</b>
+                </span>
+              </div>
+
+              {/* Center group: Media & Screen Sharing Controls */}
+              <div className="dock-group">
+                {/* Mic toggle */}
+                <button
+                  className={`dock-btn ${!isMicOn ? 'off' : ''}`}
+                  onClick={handleToggleMic}
+                  title={isMicOn ? 'Mute Microphone' : 'Unmute Microphone'}
+                >
+                  {isMicOn ? <Mic size={18} /> : <MicOff size={18} />}
+                  <span>{isMicOn ? 'Mute' : 'Unmuted'}</span>
+                </button>
+
+                {/* Camera toggle */}
+                <button
+                  className={`dock-btn ${!isCamOn ? 'off' : ''}`}
+                  onClick={handleToggleCam}
+                  title={isCamOn ? 'Turn Off Camera' : 'Turn On Camera'}
+                >
+                  {isCamOn ? <Video size={18} /> : <VideoOff size={18} />}
+                  <span>{isCamOn ? 'Camera' : 'Camera Off'}</span>
+                </button>
+
+                {/* Screen Share (Teacher only) */}
+                {isTeacher && (
+                  <button
+                    className={`dock-btn ${isSharingScreen ? 'active' : ''}`}
+                    onClick={handleToggleScreenShare}
+                    title={isSharingScreen ? 'Stop Screen Sharing' : 'Share Screen'}
+                  >
+                    {isSharingScreen ? <MonitorOff size={18} /> : <Monitor size={18} />}
+                    <span>{isSharingScreen ? 'Stop Share' : 'Share Screen'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Right group: Drawers, Fullscreen, Leave/End Call */}
+              <div className="dock-group">
+                {/* Chat toggle */}
+                <button
+                  className={`dock-btn icon-only ${activeDrawerTab === 'chat' ? 'active' : ''}`}
+                  onClick={() => setActiveDrawerTab(activeDrawerTab === 'chat' ? null : 'chat')}
+                  title="Classroom Chat"
+                >
+                  <MessageSquare size={18} />
+                </button>
+
+                {/* Participants toggle */}
+                <button
+                  className={`dock-btn icon-only ${activeDrawerTab === 'participants' ? 'active' : ''}`}
+                  onClick={() => setActiveDrawerTab(activeDrawerTab === 'participants' ? null : 'participants')}
+                  title="Participants Roster"
+                >
+                  <Users size={18} />
+                </button>
+
+                {/* Fullscreen toggle */}
+                <button
+                  className="dock-btn icon-only"
+                  onClick={handleToggleFullscreen}
+                  title="Toggle Fullscreen"
+                >
+                  {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                </button>
+
+                {/* Leave / End Class */}
+                {isTeacher ? (
+                  <button
+                    className="dock-btn danger"
+                    onClick={handleEndClass}
+                    title="End Class for All"
+                  >
+                    <PhoneOff size={18} />
+                    <span>End Class</span>
+                  </button>
+                ) : (
+                  <button
+                    className="dock-btn danger"
+                    onClick={handleLeaveCall}
+                    title="Leave Video Call"
+                  >
+                    <PhoneOff size={18} />
+                    <span>Leave</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// ==========================================
-// SHARED COMPONENTS
-// ==========================================
 
-function StatCard({ label, value, icon, meta, color, trend }: any) {
-  return (
-    <div className="stat-card">
-      <div className={`stat-icon ${color}`}>{icon}</div>
-      <div className="stat-trend">{trend}</div>
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">{value}</div>
-      <div className="stat-meta">{meta}</div>
-    </div>
-  );
-}
 
-function PersonRow({ name, detail, initials, color, status }: any) {
-  return (
-    <div className="person-row">
-      <span className={`avatar avatar-${color}`}>{initials}</span>
-      <span className="person-info">
-        <b>{name}</b>
-        <small>{detail}</small>
-      </span>
-      {status && <span className="person-status">{status}</span>}
-    </div>
-  );
-}
+// -------------------------------------------------------------
+// MODALS (Create, Join, Help)
+// -------------------------------------------------------------
+function CreateClassroomModal({ onClose, onCreate }: any) {
+  const [name, setName] = useState('');
+  const [subject, setSubject] = useState('Computer Science');
+  const [batch, setBatch] = useState('S5 CSE');
+  const [description, setDescription] = useState('');
 
-function Modal({ title, subtitle, onClose, children }: any) {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onCreate({ name: name.trim(), subject, batch, description });
+  };
+
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-head">
-          <div>
-            <h2>{title}</h2>
-            <p>{subtitle}</p>
-          </div>
-          <button className="icon-btn" onClick={onClose}><X size={18} /></button>
+          <h2>Create New Classroom</h2>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
         </div>
-        {children}
+        <form onSubmit={handleSubmit} className="modal-form">
+          <label>
+            Classroom Name
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Advanced Data Structures" required />
+          </label>
+          <label>
+            Batch / Section
+            <input value={batch} onChange={(e) => setBatch(e.target.value)} placeholder="e.g. S5 CSE - Batch B" required />
+          </label>
+          <label>
+            Subject
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Algorithms & Systems" />
+          </label>
+          <label>
+            Description
+            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What will students learn in this digital room?" />
+          </label>
+          <button className="primary-btn full-btn" type="submit">Create Classroom</button>
+        </form>
       </div>
     </div>
   );
 }
 
-function AuthScreen({ mode, setMode, role, setRole, name, setName, onLoginSuccess, setToast }: any) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+function JoinClassroomModal({ onClose, onJoin }: any) {
+  const [joinCode, setJoinCode] = useState('');
 
-  const handleAuthSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (supabase) {
-      if (mode === 'signup') {
-        const res = await supabase.auth.signUp({
-          email,
-          password,
-          options: { data: { full_name: name, role: role.toLowerCase() } },
-        });
-        if (res.error) {
-          setToast(res.error.message);
-          return;
-        }
-        if (!res.data.session) {
-          setToast('Verification email sent! Check your inbox.');
-          return;
-        }
-      } else {
-        const res = await supabase.auth.signInWithPassword({ email, password });
-        if (res.error) {
-          setToast(res.error.message);
-          return;
-        }
-      }
-    } else {
-      if (!email.includes('@') || password.length < 6) {
-        setToast('Please enter a valid email and 6+ character password.');
-        return;
-      }
-    }
-    onLoginSuccess();
+    onJoin(joinCode.trim().toUpperCase());
   };
 
   return (
-    <div className="auth-layout">
-      <div className="auth-visual">
-        <div className="auth-brand">
-          <span className="brand-icon"><Command size={18} /></span>
-          devchamber<span className="brand-period">.</span>
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Join Classroom</h2>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
         </div>
-        <div className="auth-visual-content">
-          <div className="eyebrow"><span className="eyebrow-dot" /> THE DIGITAL CLASSROOM</div>
-          <h1>Teach, build,<br />and <em>demonstrate.</em></h1>
-          <p>Interactive IDE + digital classroom with live WebRTC screen sharing, isolated Python sandboxes, and collaborative editing.</p>
-        </div>
+        <form onSubmit={handleSubmit} className="modal-form">
+          <label>
+            Enter 6-Character Join Code
+            <input
+              value={joinCode}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              placeholder="e.g. DS5CSE"
+              maxLength={12}
+              required
+              style={{ letterSpacing: '2px', fontSize: '18px', textAlign: 'center', fontWeight: 700 }}
+            />
+          </label>
+          <button className="primary-btn full-btn" type="submit">Join Classroom</button>
+        </form>
       </div>
+    </div>
+  );
+}
 
-      <div className="auth-form-side">
-        <div className="auth-form-wrap">
-          <div className="auth-kicker">{mode === 'login' ? 'WELCOME BACK' : 'CREATE ACCOUNT'}</div>
-          <h2>{mode === 'login' ? 'Sign in to DevChamber' : 'Get Started with DevChamber'}</h2>
-          <p className="auth-subtitle">Live coding classrooms, workspaces, and real-time assessments.</p>
-
-          <div className="role-picker">
-            <button
-              type="button"
-              className={role === 'Teacher' ? 'picked' : ''}
-              onClick={() => {
-                setRole('Teacher');
-                setName('Alex Morgan');
-              }}
-            >
-              <GraduationCap size={16} /> Teacher (Alex)
-            </button>
-            <button
-              type="button"
-              className={role === 'Student' ? 'picked' : ''}
-              onClick={() => {
-                setRole('Student');
-                setName('Jordan Lee');
-              }}
-            >
-              <BookOpen size={16} /> Student (Jordan)
-            </button>
+function HelpModal({ onClose }: any) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Workspace Permission Model Guide</h2>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', fontSize: '14px', color: '#475569', lineHeight: 1.6 }}>
+          <div className="access-info-card">
+            <b>1. Private by Default</b>
+            Every student receives their own private workspace upon joining a classroom. Other students cannot view or edit unless explicitly shared.
           </div>
-
-          <form className="auth-form" onSubmit={handleAuthSubmit}>
-            {mode === 'signup' && (
-              <label>
-                Full Name
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Alex Morgan"
-                  required
-                />
-              </label>
-            )}
-            <label>
-              Email address
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder={role === 'Teacher' ? 'teacher@school.edu' : 'student@school.edu'}
-                required
-              />
-            </label>
-            <label>
-              Password
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="At least 6 characters"
-                minLength={6}
-                required
-              />
-            </label>
-
-            <button className="primary-btn auth-submit" type="submit">
-              {mode === 'login' ? 'Sign In to DevChamber' : 'Create DevChamber Account'} <ArrowRight size={17} />
-            </button>
-          </form>
-
-          <div className="auth-switch">
-            {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}
-            <button onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}>
-              {mode === 'login' ? 'Create one' : 'Sign in'}
-            </button>
+          <div className="access-info-card">
+            <b>2. Full Instructor Visibility</b>
+            Instructors have full classroom workspace access: inspecting code, assisting live, and taking temporary control for debugging.
           </div>
+          <div className="access-info-card">
+            <b>3. Explicit Peer Permissions</b>
+            Instructors can grant "Viewer" (read-only) or "Editor" (collaborative real-time editing) access to classmates.
+          </div>
+        </div>
+        <button className="primary-btn full-btn" onClick={onClose} style={{ marginTop: '20px' }}>
+          Got It
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -------------------------------------------------------------
+// AUTHENTICATION SCREEN
+// -------------------------------------------------------------
+function AuthScreen({ mode, setMode, onLoginSuccess, setToast }: any) {
+  const [email, setEmail] = useState('teacher@school.edu');
+  const [password, setPassword] = useState('password123');
+  const [name, setName] = useState('Alex Morgan');
+  const [role, setRole] = useState<'teacher' | 'student'>('teacher');
+  const [loading, setLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    setLoading(true);
+
+    try {
+      if (mode === 'signup') {
+        const res = await apiSignup({
+          fullName: name.trim(),
+          email: email.trim(),
+          password,
+          role,
+        });
+        onLoginSuccess({
+          userId: res.user.id,
+          name: res.user.full_name,
+          role: res.user.role === 'teacher' ? 'Teacher' : 'Student',
+        });
+      } else {
+        const res = await apiLogin({
+          email: email.trim(),
+          password,
+        });
+        onLoginSuccess({
+          userId: res.user.id,
+          name: res.user.full_name,
+          role: res.user.role === 'teacher' ? 'Teacher' : 'Student',
+        });
+      }
+    } catch (err: any) {
+      setAuthError(err?.message || 'Authentication failed');
+      setToast(err?.message || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0f172a', padding: '20px' }}>
+      <div style={{ width: 'min(100%, 420px)', background: '#ffffff', borderRadius: '16px', padding: '36px', boxShadow: '0 25px 60px rgba(0,0,0,0.4)' }}>
+        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '20px' }}>
+          <DevChamberLogo size={48} />
+        </div>
+
+        <h2 style={{ margin: '0 0 6px', fontSize: '24px', textAlign: 'center', color: '#1e293b' }}>
+          {mode === 'login' ? 'Sign in to DevChamber' : 'Create an Account'}
+        </h2>
+        <p style={{ margin: '0 0 24px', fontSize: '14px', textAlign: 'center', color: '#64748b' }}>
+          Local MySQL 8.4 Isolated Coding Sandboxes
+        </p>
+
+        {/* Role Presets */}
+        <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', background: '#f1f5f9', padding: '4px', borderRadius: '10px' }}>
+          <button
+            type="button"
+            className={`filter-pill ${role === 'teacher' ? 'active' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => {
+              setRole('teacher');
+              setName('Alex Morgan');
+              setEmail('teacher@school.edu');
+            }}
+          >
+            Teacher (Alex)
+          </button>
+          <button
+            type="button"
+            className={`filter-pill ${role === 'student' ? 'active' : ''}`}
+            style={{ flex: 1 }}
+            onClick={() => {
+              setRole('student');
+              setName('Jordan Lee');
+              setEmail('student@school.edu');
+            }}
+          >
+            Student (Jordan)
+          </button>
+        </div>
+
+        {authError && (
+          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', color: '#dc2626', padding: '10px 14px', borderRadius: '8px', fontSize: '13px', marginBottom: '16px' }}>
+            {authError}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="modal-form">
+          {mode === 'signup' && (
+            <label>
+              Full Name
+              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full Name" required />
+            </label>
+          )}
+
+          <label>
+            Email Address
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@school.edu" required />
+          </label>
+
+          <label>
+            Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" required />
+          </label>
+
+          <button className="primary-btn full-btn" type="submit" disabled={loading}>
+            {loading ? 'Authenticating…' : mode === 'login' ? 'Sign In' : 'Create Account'}
+          </button>
+        </form>
+
+        <div style={{ marginTop: '20px', textAlign: 'center', fontSize: '13px', color: '#64748b' }}>
+          {mode === 'login' ? (
+            <span>Don't have an account? <button style={{ color: '#4f46e5', fontWeight: 600 }} onClick={() => setMode('signup')}>Sign up</button></span>
+          ) : (
+            <span>Already have an account? <button style={{ color: '#4f46e5', fontWeight: 600 }} onClick={() => setMode('login')}>Sign in</button></span>
+          )}
         </div>
       </div>
     </div>

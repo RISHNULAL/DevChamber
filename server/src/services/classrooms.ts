@@ -1,176 +1,177 @@
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { randomBytes } from 'node:crypto';
-import { store, type Classroom, type ClassroomMember } from './store.js';
+import { v4 as uuidv4 } from 'uuid';
+import { Classroom, ClassroomMember, Profile } from '../models/index.js';
 
-type ClassroomInput = { name: string; subject?: string; description?: string; batch?: string };
-
-function fail(error: unknown): never {
-  throw new Error(error instanceof Error ? error.message : 'Database request failed');
+export interface ClassroomInput {
+  name: string;
+  subject?: string;
+  description?: string;
+  batch?: string;
 }
 
-export async function listClassrooms(db: SupabaseClient | null, userId: string) {
-  if (db) {
-    const { data, error } = await db
-      .from('classrooms')
-      .select('id,name,subject,description,batch,join_code,created_at,classroom_members!inner(role)')
-      .eq('classroom_members.user_id', userId);
-    if (error) fail(error);
-    return data;
-  }
-
-  // Demo store fallback
-  const userClassrooms: (Classroom & { role: 'teacher' | 'student' })[] = [];
-  for (const member of store.members) {
-    if (member.user_id === userId) {
-      const room = store.classrooms.get(member.classroom_id);
-      if (room) {
-        userClassrooms.push({ ...room, role: member.role });
-      }
-    }
-  }
-  return userClassrooms;
+export interface ClassroomRecord {
+  id: string;
+  teacher_id: string;
+  name: string;
+  subject: string;
+  description: string;
+  batch: string;
+  join_code: string;
+  is_live: boolean;
+  role?: 'teacher' | 'student';
+  created_at: string;
+  updated_at: string;
 }
 
-export async function createClassroom(db: SupabaseClient | null, userId: string, input: ClassroomInput) {
+export async function listClassrooms(userId: string) {
+  // Find all memberships for this user
+  const memberships = await ClassroomMember.find({ userId }).lean();
+  const classroomIds = memberships.map((m) => m.classroomId);
+
+  if (classroomIds.length === 0) {
+    return [];
+  }
+
+  const classrooms = await Classroom.find({ _id: { $in: classroomIds } })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const roleMap = new Map<string, 'teacher' | 'student'>();
+  for (const m of memberships) {
+    roleMap.set(m.classroomId, m.role);
+  }
+
+  return classrooms.map((c: any) => ({
+    id: c._id,
+    teacher_id: c.teacherId,
+    name: c.name,
+    subject: c.subject || 'General Studies',
+    description: c.description || '',
+    batch: c.batch || 'Batch A',
+    join_code: c.joinCode,
+    is_live: Boolean(c.isLive),
+    role: roleMap.get(c._id) || 'student',
+    created_at: c.createdAt ? new Date(c.createdAt).toISOString() : new Date().toISOString(),
+    updated_at: c.updatedAt ? new Date(c.updatedAt).toISOString() : new Date().toISOString(),
+  }));
+}
+
+export async function createClassroom(userId: string, input: ClassroomInput) {
+  // 1. Verify user is a teacher or admin
+  const profile = await Profile.findById(userId).lean();
+  if (!profile || !['teacher', 'admin'].includes(profile.role)) {
+    throw new Error('Only teachers can create classrooms');
+  }
+
+  const classroomId = uuidv4();
   const joinCode = randomBytes(4).toString('hex').slice(0, 6).toUpperCase();
 
-  if (db) {
-    const { data: profile, error: profileError } = await db.from('profiles').select('role').eq('id', userId).single();
-    if (profileError || !profile || !['teacher', 'admin'].includes(profile.role)) {
-      throw new Error('Only teachers can create classrooms');
-    }
-
-    const { data: room, error } = await db
-      .from('classrooms')
-      .insert({ ...input, join_code: joinCode, teacher_id: userId })
-      .select()
-      .single();
-    if (error) fail(error);
-
-    const { error: memberError } = await db
-      .from('classroom_members')
-      .insert({ classroom_id: room.id, user_id: userId, role: 'teacher' });
-    if (memberError) fail(memberError);
-
-    return room;
-  }
-
-  // Demo store
-  const id = `class-${Date.now()}`;
-  const room: Classroom = {
-    id,
+  const classroom = await Classroom.create({
+    _id: classroomId,
+    teacherId: userId,
     name: input.name,
     subject: input.subject || 'General Studies',
     description: input.description || '',
     batch: input.batch || 'Batch A',
-    join_code: joinCode,
-    teacher_id: userId,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-    is_live: false,
-  };
-  store.classrooms.set(id, room);
-  store.members.push({
-    classroom_id: id,
-    user_id: userId,
-    role: 'teacher',
-    full_name: store.profiles.get(userId)?.full_name || 'Alex Morgan',
-    joined_at: new Date().toISOString(),
+    joinCode,
+    isLive: false,
   });
 
-  return room;
+  await ClassroomMember.create({
+    _id: uuidv4(),
+    classroomId,
+    userId,
+    role: 'teacher',
+  });
+
+  return {
+    id: classroom._id,
+    teacher_id: classroom.teacherId,
+    name: classroom.name,
+    subject: classroom.subject,
+    description: classroom.description,
+    batch: classroom.batch,
+    join_code: classroom.joinCode,
+    is_live: Boolean(classroom.isLive),
+    role: 'teacher',
+    created_at: classroom.createdAt?.toISOString(),
+    updated_at: classroom.updatedAt?.toISOString(),
+  };
 }
 
-export async function joinClassroom(db: SupabaseClient | null, userId: string, classroomId: string, joinCode: string) {
-  if (db) {
-    const { data: room, error } = await db.from('classrooms').select('id,join_code,name').eq('id', classroomId).single();
-    if (error || !room || room.join_code !== joinCode.toUpperCase()) {
-      throw new Error('Classroom or join code was not found');
-    }
-    const { data, error: joinError } = await db
-      .from('classroom_members')
-      .upsert({ classroom_id: classroomId, user_id: userId, role: 'student' }, { onConflict: 'classroom_id,user_id' })
-      .select()
-      .single();
-    if (joinError) fail(joinError);
-    return data;
-  }
+export async function joinClassroom(userId: string, classroomId: string, joinCode: string) {
+  const cleanCode = joinCode.trim().toUpperCase();
 
-  // Demo store
-  const room = store.classrooms.get(classroomId);
-  if (!room || room.join_code !== joinCode.toUpperCase()) {
+  const room = await Classroom.findOne({ _id: classroomId, joinCode: cleanCode });
+  if (!room) {
     throw new Error('Classroom or join code was not found');
   }
 
-  const existing = store.members.find((m) => m.classroom_id === classroomId && m.user_id === userId);
-  if (!existing) {
-    store.members.push({
-      classroom_id: classroomId,
-      user_id: userId,
-      role: 'student',
-      full_name: store.profiles.get(userId)?.full_name || 'Student',
-      joined_at: new Date().toISOString(),
-    });
-  }
-  return { classroom_id: classroomId, user_id: userId, role: 'student', name: room.name };
+  await ClassroomMember.findOneAndUpdate(
+    { classroomId, userId },
+    { role: 'student', joinedAt: new Date() },
+    { upsert: true, new: true }
+  );
+
+  return {
+    classroom_id: classroomId,
+    user_id: userId,
+    role: 'student',
+    name: room.name,
+  };
 }
 
-export async function joinClassroomByCode(db: SupabaseClient | null, userId: string, joinCode: string) {
+export async function joinClassroomByCode(userId: string, joinCode: string) {
   const cleanCode = joinCode.trim().toUpperCase();
 
-  if (db) {
-    const { data: room, error } = await db.from('classrooms').select('id,name,join_code').eq('join_code', cleanCode).single();
-    if (error || !room) throw new Error('Classroom code not found. Please check the code and try again.');
-    const { error: joinError } = await db
-      .from('classroom_members')
-      .upsert({ classroom_id: room.id, user_id: userId, role: 'student' }, { onConflict: 'classroom_id,user_id' });
-    if (joinError) fail(joinError);
-    return { id: room.id, name: room.name, join_code: room.join_code };
+  const room = await Classroom.findOne({ joinCode: cleanCode });
+  if (!room) {
+    throw new Error('Classroom code not found. Please check the code and try again.');
   }
 
-  // Demo store search by code
-  let matchedRoom: Classroom | null = null;
-  for (const r of store.classrooms.values()) {
-    if (r.join_code === cleanCode) {
-      matchedRoom = r;
-      break;
-    }
-  }
+  await ClassroomMember.findOneAndUpdate(
+    { classroomId: room._id, userId },
+    { role: 'student', joinedAt: new Date() },
+    { upsert: true, new: true }
+  );
 
-  if (!matchedRoom) {
-    throw new Error('Classroom code not found. Please check the code with your teacher.');
-  }
-
-  const existing = store.members.find((m) => m.classroom_id === matchedRoom!.id && m.user_id === userId);
-  if (!existing) {
-    store.members.push({
-      classroom_id: matchedRoom.id,
-      user_id: userId,
-      role: 'student',
-      full_name: store.profiles.get(userId)?.full_name || 'Student',
-      joined_at: new Date().toISOString(),
-    });
-  }
-
-  return { id: matchedRoom.id, name: matchedRoom.name, join_code: matchedRoom.join_code };
+  return {
+    id: room._id,
+    name: room.name,
+    join_code: room.joinCode,
+  };
 }
 
-export async function getClassroomDetails(db: SupabaseClient | null, classroomId: string) {
-  if (db) {
-    const { data: room, error } = await db.from('classrooms').select('*').eq('id', classroomId).single();
-    if (error) fail(error);
-    const { data: members } = await db.from('classroom_members').select('user_id,role,profiles(full_name)').eq('classroom_id', classroomId);
-    return { ...room, members };
+export async function getClassroomDetails(classroomId: string) {
+  const room = await Classroom.findById(classroomId).lean();
+  if (!room) {
+    throw new Error('Classroom not found');
   }
 
-  const room = store.classrooms.get(classroomId);
-  if (!room) throw new Error('Classroom not found');
-  const members = store.members
-    .filter((m) => m.classroom_id === classroomId)
-    .map((m) => ({
-      user_id: m.user_id,
+  const members = await ClassroomMember.find({ classroomId }).lean();
+  const userIds = members.map((m) => m.userId);
+  const profiles = await Profile.find({ _id: { $in: userIds } }).lean();
+
+  const profileMap = new Map<string, any>();
+  for (const p of profiles) {
+    profileMap.set(p._id, p);
+  }
+
+  return {
+    id: room._id,
+    teacher_id: room.teacherId,
+    name: room.name,
+    subject: room.subject,
+    description: room.description,
+    batch: room.batch,
+    join_code: room.joinCode,
+    is_live: Boolean(room.isLive),
+    created_at: room.createdAt ? new Date(room.createdAt).toISOString() : new Date().toISOString(),
+    updated_at: room.updatedAt ? new Date(room.updatedAt).toISOString() : new Date().toISOString(),
+    members: members.map((m: any) => ({
+      user_id: m.userId,
       role: m.role,
-      full_name: m.full_name || store.profiles.get(m.user_id)?.full_name || m.user_id,
-    }));
-  return { ...room, members };
+      full_name: profileMap.get(m.userId)?.fullName || 'Member',
+    })),
+  };
 }
